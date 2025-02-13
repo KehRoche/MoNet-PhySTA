@@ -6,6 +6,8 @@ import numpy as np
 from src.utils.metrics import masked_mape
 from src.utils.metrics import masked_rmse
 from src.utils.metrics import compute_all_metrics
+import torch.profiler
+
 
 class BaseEngine():
     def __init__(self, device, model, dataloader, scaler, sampler, loss_fn, lrate, optimizer, \
@@ -124,6 +126,12 @@ class BaseEngine():
         min_loss = np.inf
         for epoch in range(self._max_epochs):
             t1 = time.time()
+            prof = torch.profiler.profile(
+                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
+                on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/monet'),
+                record_shapes=True,
+                with_stack=True)
+            prof.start()
             mtrain_loss, mtrain_mape, mtrain_rmse = self.train_batch()
             t2 = time.time()
 

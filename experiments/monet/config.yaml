@@ -19,5 +19,5 @@ config1:
   kernel_size: 3
   head_dropout: 0.05
   #spital
-  num_gconv: 5
+  num_gconv: 3
   time_emb_dim: 16

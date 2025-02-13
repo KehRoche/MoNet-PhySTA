@@ -54,6 +54,59 @@ def get_config(config_path):
 
     return config, log_dir, logger
 
+def nas(config):
+    from nni.nas.evaluator import FunctionalEvaluator
+    import nni
+    import nni.nas.strategy as strategy
+
+    cudnn.benchmark = True
+    if (not os.path.exists(config.model_save_path)):
+        mkdir(config.model_save_path)
+#'prior_method': 'MultiheadDilatedAttention', 'series_method': 'Inception_1d',
+    params = {
+        'anormly_ratio': 0.6,
+        'gru_dropout':0.5,
+        'd_model':128,
+        'window_size': 128,
+        'dataset': 'MSL'
+    }
+
+    optimized_params = nni.get_next_parameter()
+    params.update(optimized_params)
+    print(params)
+
+    # config.prior_method = params['prior_method']
+    # config.series_method = params['series_method']
+    config.win_size = params['window_size']
+    config.gru_dropout = params['gru_dropout']
+    config.d_model = params['d_model']
+    config.anormly_ratio = params['anormly_ratio']
+    config.dataset = params['dataset']
+    config.data_path = params['dataset']
+    if config.dataset == 'MSL':
+        config.input_c = 55
+    elif config.dataset == 'SMD':
+        config.input_c = 38
+    elif config.dataset == 'PSM':
+        config.input_c = 25
+    elif config.dataset == 'SMAP':
+        config.input_c = 25
+    elif config.dataset == 'NIPS_TS_Swan':
+        config.input_c = 38
+    elif config.dataset == 'NIPS_TS_Water':
+        config.input_c = 9
+
+
+
+    solver = Solver(vars(config))
+    solver.train()
+    _,precision, recall,f1_score=solver.test()
+    nni.report_final_result(f1_score)
+    precision = "{:.3f}".format(precision*100)
+    recall = "{:.3f}".format(recall*100)
+
+
+
 
 def main():
     config, log_dir, logger = get_config('config.yaml')

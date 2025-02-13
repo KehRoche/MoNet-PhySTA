@@ -2,6 +2,9 @@ import torch
 import numpy as np
 from src.base.engine import BaseEngine
 from src.utils.metrics import masked_mape, masked_rmse
+import torch.profiler
+from torch.utils.tensorboard import SummaryWriter
+
 
 class MONET_Engine(BaseEngine):
     def __init__(self, cl_step, warm_step, horizon, **args):
@@ -18,10 +21,11 @@ class MONET_Engine(BaseEngine):
         train_loss = []
         train_mape = []
         train_rmse = []
+        writer = SummaryWriter(log_dir='runs/value')
+
         self._dataloader['train_loader'].shuffle()
         for X, label in self._dataloader['train_loader'].get_iterator():
             self._optimizer.zero_grad()
-
             X, label = self._to_device(self._to_tensor([X, label]))
             pred = self.model(X, label)
             pred, label = self._inverse_transform([pred, label])
@@ -50,6 +54,10 @@ class MONET_Engine(BaseEngine):
             rmse = masked_rmse(pred, label, mask_value).item()
 
             loss.backward()
+            for name, param in self.model.named_parameters():
+                if param.grad is not None:
+                    # 将梯度记录到TensorBoard，使用scalars来记录每一层的梯度信息
+                    writer.add_histogram(f'value/{name}', param, self._iter_cnt)
             if self._clip_grad_value != 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
             self._optimizer.step()
@@ -57,5 +65,5 @@ class MONET_Engine(BaseEngine):
             train_loss.append(loss.item())
             train_mape.append(mape)
             train_rmse.append(rmse)
-
+        writer.close()
         return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
