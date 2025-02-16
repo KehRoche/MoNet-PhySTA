@@ -21,7 +21,7 @@ class MONET_Engine(BaseEngine):
         train_loss = []
         train_mape = []
         train_rmse = []
-        writer = SummaryWriter(log_dir='runs/value')
+        writer = SummaryWriter(log_dir='runs/temp_module')
 
         self._dataloader['train_loader'].shuffle()
         for X, label in self._dataloader['train_loader'].get_iterator():
@@ -54,10 +54,11 @@ class MONET_Engine(BaseEngine):
             rmse = masked_rmse(pred, label, mask_value).item()
 
             loss.backward()
-            for name, param in self.model.named_parameters():
-                if param.grad is not None:
-                    # 将梯度记录到TensorBoard，使用scalars来记录每一层的梯度信息
-                    writer.add_histogram(f'value/{name}', param, self._iter_cnt)
+            # for name, param in self.model.named_parameters():
+            #     writer.add_histogram(f'value/{name}', param, self._iter_cnt)
+            #     if param.grad is not None and param.grad.numel() > 0 and param.grad.abs().sum() > 0:
+            #         # 将梯度记录到TensorBoard，使用scalars来记录每一层的梯度信息
+            #         writer.add_histogram(f'grad/{name}', param.grad, self._iter_cnt)
             if self._clip_grad_value != 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
             self._optimizer.step()

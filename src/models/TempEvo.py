@@ -1,5 +1,7 @@
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+
 from .UniMoudle import *
 
 
@@ -42,8 +44,6 @@ class TempEvo(nn.Module):
         batch_size = x.size(0)
         l_recons = 0
         #batch,nodes,len,feat
-        x = self.feature_embedding(x.transpose(-1, -2))
-        x = x.transpose(-1, -2)
         y_pinn = self.PINN(x)
 
         #x：batch,num_node,seq_len,feat
@@ -51,7 +51,7 @@ class TempEvo(nn.Module):
             x_resi = x.clone()
             y_dnn = self.DNN[i](x)
             x_time = self.side_encoding[i](x_time.transpose(-1, -2)).transpose(-1, -2)
-            x = torch.relu(y_dnn+x_time+self.residual[i]((x_resi.transpose(-1, -2))).transpose(-1, -2))
+            x = F.gelu(y_dnn+x_time+self.residual[i]((x_resi.transpose(-1, -2))).transpose(-1, -2))
         y_dnn = self.dnn_output(x)
         #l_recons += self.loss(x_re.reshape(batch_size,-1),x.reshape(batch_size,-1))
         #l_pred = self.loss(y_pred.reshape(batch_size,-1),y.reshape(batch_size,-1))
@@ -118,19 +118,27 @@ class KoopmanOperator1D(nn.Module):
         self.op_size = op_size
         self.modes_x = modes_x
         self.scale = 1 / (op_size * op_size)
-        self.koopman_matrix = nn.Parameter(self.scale * torch.rand(op_size, op_size, self.modes_x, dtype=torch.cfloat))
+        # 初始化实部和虚部的参数
+        self.koopman_matrix_real = nn.Parameter(self.scale * torch.rand(op_size, op_size, self.modes_x))
+        self.koopman_matrix_imag = nn.Parameter(self.scale * torch.rand(op_size, op_size, self.modes_x))
 
-    def time_marching(self, input, weights):
-        return torch.einsum("bntx,tfx->bnfx", input, weights)
+    def time_marching(self, input_real, input_imag, weights_real, weights_imag):
+        # 分别处理实部和虚部
+        real_part = torch.einsum("bntx,tfx->bnfx", input_real, weights_real) - torch.einsum("bntx,tfx->bnfx", input_imag, weights_imag)
+        imag_part = torch.einsum("bntx,tfx->bnfx", input_real, weights_imag) + torch.einsum("bntx,tfx->bnfx", input_imag, weights_real)
+        return real_part, imag_part
 
     def forward(self, x):
         batch_size = x.shape[0]
-        # Fourier Transform
+        # 傅里叶变换
         x_ft = torch.fft.rfft(x.transpose(-1, -2))
-        # Koopman Operator Time Marching
-        out_ft = torch.zeros_like(x_ft, dtype=torch.cfloat, device=x.device)
-        out_ft[:, :, :, :self.modes_x] = self.time_marching(x_ft[:, :, :, :self.modes_x], self.koopman_matrix)
-        # Inverse Fourier Transform
+        # 获取实部和虚部
+        x_real = x_ft.real
+        x_imag = x_ft.imag
+        # Koopman算子时间推进
+        out_real, out_imag = self.time_marching(x_real, x_imag, self.koopman_matrix_real, self.koopman_matrix_imag)
+        # 反傅里叶变换
+        out_ft = torch.complex(out_real, out_imag)
         x_out = torch.fft.irfft(out_ft, n=x.size(-2))
         return x_out.transpose(-1, -2)
 

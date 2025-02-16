@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-
+import torch.nn.functional as F
 
 class DSCLayer(nn.Module):
     def __init__(self, input_dim, out_dim, kernel_size=4):
@@ -118,5 +118,18 @@ class Conv1d(nn.Module):
         else:
             y = self.convolution(x)
         if self.actv:
-            y =  torch.relu(self.dropout(y))
+            y =  F.gelu(self.dropout(y))
         return y
+
+
+def compute_laplacian(adj_matrix):
+    # 计算度矩阵 D
+    degree_matrix = torch.diag(torch.sum(adj_matrix, dim=1)).to(adj_matrix.device)
+
+    # 计算 D^(-1/2)
+    degree_inv_sqrt = torch.pow(degree_matrix, -0.5)
+    degree_inv_sqrt[torch.isinf(degree_inv_sqrt)] = 0  # 处理零度节点
+
+    # 计算归一化的拉普拉斯矩阵 L
+    laplacian = torch.eye(adj_matrix.size(0)).to(adj_matrix.device) - torch.mm(torch.mm(degree_inv_sqrt, adj_matrix), degree_inv_sqrt)
+    return laplacian

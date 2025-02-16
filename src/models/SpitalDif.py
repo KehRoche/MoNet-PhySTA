@@ -13,8 +13,7 @@ class SpitalDif(nn.Module):
         self.input_dim = input_dim
         self.seq_len = seq_len
         self.emd_dim = config['emd_dim']
-        self.hidden_dim = hidden_dim
-
+        hidden_dims = config['hidden_channels']
         #转移矩阵
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         #self.core_index = config['core_index']
@@ -22,27 +21,16 @@ class SpitalDif(nn.Module):
 
         init_decay = 1
         init_lambda = 0.01
-        self.num_matric = config['num_gconv']
+        num_matric = config['num_gconv']
 
-        # start embedding layer
-        self.embedding   = nn.Linear(self.input_dim, self.emd_dim)
-        # time embedding
-        self.T_i_D_emb  = nn.Parameter(torch.empty(288, self._time_emb_dim))
-        self.D_i_W_emb  = nn.Parameter(torch.empty(7, self._time_emb_dim))
-
-        # pivot_feature
-        self.env_fea = nn.Parameter(torch.rand(1, self.emd_dim))
-        self.pivot_emb = nn.Parameter(torch.empty(self.emd_dim, self.emd_dim))
+        self.gcn = UnetGCN(hidden_dims,num_matric)
 
 
-        init_gamma = torch.exp(torch.tensor(1.0))
-        self.gamma = nn.Parameter(init_gamma)  # 初始值为 e 的可学习参数
 
         self.lambda_ = nn.Parameter(torch.tensor(init_lambda))  # 初始值为 1 的可学习参数
 
         self.dropout = nn.Dropout(config['dropout'])
-        self.gcn_updt = nn.Linear(
-            self.emd_dim*self.num_matric, self.emd_dim)
+
         self.out_linear = nn.Linear(self.emd_dim, self.emd_dim)
         self.decay_factor = nn.Parameter(torch.tensor(init_decay, dtype=torch.float32))
 
@@ -67,40 +55,13 @@ class SpitalDif(nn.Module):
         self.G = nn.Parameter(torch.tensor(10, dtype=torch.float32))  # 可学习的参数 G
         self.Ws_in = nn.Parameter(torch.randn(self.emd_dim, self.emd_dim))  # 输出权重矩阵
 
-        self.init_parm()
+        #self.init_parm()
     def init_parm(self):
-        """集中式权重初始化函数"""
-        #######################################
-        # 1. 时间特征嵌入初始化
-        #######################################
-        nn.init.xavier_uniform_(self.T_i_D_emb)
-        nn.init.xavier_uniform_(self.D_i_W_emb)
-
-        #######################################
         # 2. 图卷积相关参数
-        #######################################
-        # GCN更新层
-        nn.init.xavier_uniform_(self.gcn_updt.weight)
-        nn.init.zeros_(self.gcn_updt.bias)
-
-        # 相似度计算模块
-        for layer in self.gatsim:
-            if isinstance(layer, nn.Linear):
-                nn.init.xavier_uniform_(layer.weight)
-                if layer.bias is not None:
-                    nn.init.zeros_(layer.bias)
-
         # 特征压缩层
         nn.init.xavier_uniform_(self.compress.weight)
         nn.init.zeros_(self.compress.bias)
 
-        #######################################
-        # 3. 环境与枢纽特征
-        #######################################
-        nn.init.xavier_uniform_(self.env_fea)
-        nn.init.xavier_uniform_(self.pivot_emb)
-
-        #######################################
         # 4. 扩散和虹吸参数
         #######################################
         # 扩散权重矩阵
@@ -129,18 +90,6 @@ class SpitalDif(nn.Module):
 
         # 全局平衡系数
         nn.init.uniform_(self.lambda_, 0.5, 1.5)
-
-    def gconv(self, support, X_0):
-        out = [X_0]
-        for graph in support:
-            if len(graph.shape) == 3:  # staitic or predefined grap
-                graph = graph.unsqueeze(1).repeat(1, self.seq_len, 1,1)
-            H_k = torch.matmul(graph, X_0)
-            out.append(H_k)
-        out = torch.cat(out, dim=-1)
-        out = self.gcn_updt(out)
-        out = self.dropout(out)
-        return out
 
     def _multi_order(self, graph,order):
         graph_ordered = []
@@ -241,27 +190,9 @@ class SpitalDif(nn.Module):
         return A_sip
 
 
-
-    def CoreNodeEnhancer(self, X):
-        """
-        :param X: Input feature matrix (B, N, D)
-        :return: Enhanced feature matrix (B, N, D)
-        """
-        B, L, N, D = X.shape
-        assert D == self.emd_dim, "Feature dimension mismatch"
-
-        # Create a mask for core nodes
-        mask = torch.zeros(N, device=X.device)
-        mask[self.core_index] = 1  # Set core nodes to 1
-        mask = mask.unsqueeze(0).unsqueeze(-1)  # (1, N, 1)
-
-        # Calculate enhancement
-        enhanced_features = torch.matmul(X, self.pivot_emb)  # (B, N, D)
-        enhanced_X = X + mask * (enhanced_features - X)  # Apply only to core nodes
-        return enhanced_X
     def forward(self, X_sptial,A,Time):
         #batch,nodes,seq,feat
-        X = self.embedding(X_sptial).transpose(1, 2)
+        X_sptial = X_sptial.transpose(1, 2)
 
         #b,L,N,F
         # X_env =self.env_fea.repeat(X.shape[0],X.shape[1],X.shape[2],1)
@@ -271,7 +202,7 @@ class SpitalDif(nn.Module):
         # X = X + decayed_env_fea
         #锚点特征增强
         #X = self.CoreNodeEnhancer(X)
-        K = self.anomaly_factors(X, A,Time)
+        K = self.anomaly_factors(X_sptial, A,Time)
         A_dif = self.Disp(A,K)
 
         A_sip = self.Sipon(A)
@@ -299,10 +230,40 @@ class SpitalDif(nn.Module):
         support.append(A_sip.transpose(-1,-2))
         #support.extend(self._multi_order(A,order=2))
         #扩散衰减矩阵聚合+原始图卷积
-        Y_dif = self.gconv(support,X)
-        Y_dif = self.dropout(Y_dif)
-        Y_dif = self.out_linear(Y_dif)
+        Y_dif = self.gcn(X_sptial,support)
         return Y_dif.transpose(1,2)
 
 
+class UnetGCN(nn.Module):
+    def __init__(self,hidden_dim,num_adjs):
+        super().__init__()
+        self.up_gconv = nn.ModuleList(
+            [GraphConvLayer(hidden_dim[i], hidden_dim[i+1],num_adjs) for i in range(len(hidden_dim) - 1)])
+        self.down_gconv = nn.ModuleList(
+            [GraphConvLayer(hidden_dim[i]*2, hidden_dim[i - 1],num_adjs) for i in range(len(hidden_dim) - 1, 0, -1)])
 
+    def forward(self,X_sptial,support):
+        X_up = [X_sptial]
+        for i in range(len(self.up_gconv)):
+            X_up.append(self.up_gconv[i](support, X_up[i]))
+        X_down = [X_up[-1]]
+        for i in range(len(self.down_gconv)):
+            X_down.append(self.down_gconv[i](support,torch.cat([X_up[-i-1], X_down[i]],dim=-1)))
+        return X_down[-1]
+
+class GraphConvLayer(nn.Module):
+    def __init__(self, in_channels, out_channels,num_adjs):
+        super(GraphConvLayer, self).__init__()
+        self.out_channels = out_channels
+        self.gcn_updt = nn.Linear(in_channels*num_adjs, out_channels)
+        self.bn = nn.BatchNorm1d(out_channels)
+
+    def forward(self,support,X):
+        out = [X]
+        for graph in support:
+            H_k = torch.matmul(graph, X)
+            out.append(H_k)
+        out = torch.cat(out, dim=-1)
+        out = self.gcn_updt(out)
+        out = F.gelu((self.bn(out.view(-1, out.shape[-1]))))
+        return out.reshape(X.shape[0],X.shape[1],X.shape[2],-1)
