@@ -26,8 +26,6 @@ class TempEvo(nn.Module):
         self.feature_embedding = Conv1d(input_dim, self.emd_dim, 1, actv=False)
         self.side_encoding = nn.ModuleList([Conv1d(side_channels[i], side_channels[i+1], 1, dropout=self.dropout) for i in range(len(side_channels) - 1)])
 
-        self.route_weight = nn.Parameter(torch.randn(self.seq_len, self.seq_len))
-
         self.PINN = SubSeqForcast(config,seq_len=self.seq_len,kno_layers=self.kno_layers)
         self.DNN = nn.ModuleList([LongtermForcast(config,seq_len=self.seq_len,
                                                  input_hidden=self.hidden_channels[i], output_hidden=self.hidden_channels[i+1],tcn_layers=self.tcn_layers) for i in range(len(self.hidden_channels) - 1)])
@@ -41,7 +39,6 @@ class TempEvo(nn.Module):
 
 
     def forward(self, x,x_time):
-        batch_size = x.size(0)
         l_recons = 0
         #batch,nodes,len,feat
         y_pinn = self.PINN(x)

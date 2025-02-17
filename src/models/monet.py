@@ -55,10 +55,9 @@ class MoNet(BaseModel):
         X_inevo = self.TempModule(X,time)
         X_exdif = self.SptialModule(X,self.A,time)
 
-        # weight_inevo = 0.5*torch.ones_like(X_inevo)+self.router_weight
-        # weight_exdif = 0.5*torch.ones_like(X_exdif)-self.router_weight
-        # y_hat = weight_inevo*X_inevo + weight_exdif*X_exdif
-        y_hat = X_exdif
+        weight_inevo = 0.5*torch.ones_like(X_inevo)+self.router_weight
+        weight_exdif = 0.5*torch.ones_like(X_exdif)-self.router_weight
+        y_hat = weight_inevo*X_inevo + weight_exdif*X_exdif
         y_hat =  F.gelu(self.out_fc_1(y_hat))
         y_hat = self.out_fc_2(y_hat)
 

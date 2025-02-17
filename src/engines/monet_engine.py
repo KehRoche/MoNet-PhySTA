@@ -7,13 +7,14 @@ from torch.utils.tensorboard import SummaryWriter
 
 
 class MONET_Engine(BaseEngine):
-    def __init__(self, cl_step, warm_step, horizon, **args):
-        super(MONET_Engine, self).__init__(**args)
+    def __init__(self, cl_step, warm_step, horizon,tempvar_penalty,spatialvar_penalty, **args):
+        super().__init__(**args)
         self._cl_step = cl_step
         self._warm_step = warm_step
         self._horizon = horizon
         self._cl_len = 0
-
+        self.tempvar_penalty = tempvar_penalty
+        self.spatialvar_penalty = spatialvar_penalty
 
     def train_batch(self):
         self.model.train()
@@ -49,16 +50,21 @@ class MONET_Engine(BaseEngine):
             pred = pred[:, :self._cl_len, :, :]
             label = label[:, :self._cl_len, :, :]
 
-            loss = self._loss_fn(pred, label, mask_value)
+
+            temporal_var = torch.var(pred, dim=1, keepdim=False)  # 移除时间维度
+            temporal_penalty = torch.mean(temporal_var) * self.tempvar_penalty
+            spatial_var = torch.var(pred, dim=2, keepdim=False)  # 移除空间维度
+            spatial_penalty = torch.mean(spatial_var) * self.spatialvar_penalty
+            loss = self._loss_fn(pred, label, mask_value)+temporal_penalty+spatial_penalty
             mape = masked_mape(pred, label, mask_value).item()
             rmse = masked_rmse(pred, label, mask_value).item()
 
             loss.backward()
-            # for name, param in self.model.named_parameters():
-            #     writer.add_histogram(f'value/{name}', param, self._iter_cnt)
-            #     if param.grad is not None and param.grad.numel() > 0 and param.grad.abs().sum() > 0:
-            #         # 将梯度记录到TensorBoard，使用scalars来记录每一层的梯度信息
-            #         writer.add_histogram(f'grad/{name}', param.grad, self._iter_cnt)
+            for name, param in self.model.named_parameters():
+                writer.add_histogram(f'value/{name}', param, self._iter_cnt)
+                if param.grad is not None and param.grad.numel() > 0 and param.grad.abs().sum() > 0:
+                    # 将梯度记录到TensorBoard，使用scalars来记录每一层的梯度信息
+                    writer.add_histogram(f'grad/{name}', param.grad, self._iter_cnt)
             if self._clip_grad_value != 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self._clip_grad_value)
             self._optimizer.step()

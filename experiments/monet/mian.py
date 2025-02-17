@@ -1,8 +1,9 @@
 import os
 import argparse
 import numpy as np
-import  yaml
+import yaml
 import sys
+import torch.nn as nn
 
 sys.path.append(os.path.abspath(__file__ + '/../../..'))
 
@@ -34,7 +35,7 @@ def get_config(config_path):
     parser.add_argument('--tpd', type=int, default=96)
 
     parser.add_argument('--lrate', type=float, default=2e-3)
-    parser.add_argument('--wdecay', type=float, default=0)
+    parser.add_argument('--wdecay', type=float, default=1e-5)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--clip_grad_value', type=float, default=5)
     args = parser.parse_args()
@@ -105,9 +106,26 @@ def nas(config):
     precision = "{:.3f}".format(precision*100)
     recall = "{:.3f}".format(recall*100)
 
-
-
-
+def init_weights(m):
+    """分层初始化：卷积、BN、线性层差异化处理"""
+    if isinstance(m, nn.Conv1d):
+        nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+        if m.bias is not None:  # 偏置项非空时初始化为0
+            nn.init.zeros_(m.bias)
+    elif isinstance(m, nn.BatchNorm1d):
+        nn.init.ones_(m.weight)  # BN层gamma初始化为1
+        if hasattr(m, 'bias') and m.bias is not None:  # 关键修改
+            nn.init.zeros_(m.bias)  # BN层beta初始化为0
+    elif isinstance(m, nn.Linear):
+        nn.init.xavier_normal_(m.weight, gain=nn.init.calculate_gain('relu'))
+        if hasattr(m, 'bias') and m.bias is not None:  # 关键修改
+            nn.init.normal_(m.bias, mean=0, std=0.01)
+    elif isinstance(m, nn.Parameter):
+        # 针对特定参数类型初始化
+        if 'weight' in m.name:
+            nn.init.kaiming_normal_(m, mode='fan_in', nonlinearity='relu')
+        elif 'coff' in m.name:
+            nn.init.constant_(param, 1.0)
 def main():
     config, log_dir, logger = get_config('config.yaml')
 
@@ -134,6 +152,7 @@ def main():
                   model_config=config  # 将 config 传递给模型
                   )
 
+    model.apply(init_weights)
     loss_fn = masked_mae
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lrate'], weight_decay=config['wdecay'], eps=1e-8)
     scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1, 38, 46, 54, 62, 70, 80], gamma=0.5)
@@ -155,7 +174,9 @@ def main():
                           seed=config['seed'],
                           cl_step=cl_step,
                           warm_step=warm_step,
-                          horizon=config['horizon']
+                          horizon=config['horizon'],
+                          tempvar_penalty=config['temp_penalty'],
+                          spatialvar_penalty=config['spital_penalty']
                           )
 
     # 根据运行模式选择训练或评估
