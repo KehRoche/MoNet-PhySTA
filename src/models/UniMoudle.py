@@ -26,7 +26,7 @@ class DSCLayer(nn.Module):
         return x
 
 
-class PreProcess(nn.Module):
+class DynmiacGate(nn.Module):
     def __init__(self, input_dim,emd_dim):
         super().__init__()
         self.flow_gate = nn.Sequential(

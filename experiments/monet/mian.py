@@ -136,12 +136,14 @@ def main():
 
     # 获取数据集相关信息
     data_path, adj_path, node_num = get_dataset_info(config['dataset'])
-    logger.info('Adj path: ' + adj_path)
     if(config['dataset'] == 'PEMS-BAY'):
         A = load_adj_from_pickle(adj_path)[2]
     else:
         A = load_adj_from_numpy(adj_path)
     config['adj'] = torch.tensor(A).to(device)
+    location_path = data_path + '/location.npy'
+    location = np.load(location_path)
+    config['location'] = torch.tensor(location).to(device)
     dataloader, scaler = load_dataset(data_path, config, logger)
 
     cl_step = config['cl_epoch'] * dataloader['train_loader'].num_batch
