@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
+from tslearn.metrics import cdist_dtw
 from .UniMoudle import *
-
+from .TempEvo import SubSeqForcast
 
 
 
@@ -27,8 +28,8 @@ class SpitalDif(nn.Module):
         self.dropout = nn.Dropout(config['dropout'])
 
         self.out_linear = nn.Linear(self.emd_dim, self.emd_dim)
-        self.decay_factor = nn.Parameter(torch.tensor(init_decay, dtype=torch.float32))
-
+        #PINN
+        #self.phy_field = SubSeqForcast(config,self.seq_len)
 
         # local sim comput param
         self.gatsim = nn.Sequential(
@@ -68,23 +69,10 @@ class SpitalDif(nn.Module):
         sem_matrix = torch.matmul(sim_matrix,fea_sum.repeat(1,1,1,N))
         return sem_matrix
 
-    def Disp(self,A,K):
-        # Step 1: 扩展 alpha 为 (N, N)
-        N = K.shape[2]
-        #alpha_expanded = K.unsqueeze(-1)  # (N, 1)
-        A = A.reshape(1,1,N,N).repeat(K.shape[0], K.shape[1],1,1)
-        # Step 2: 计算扩散矩阵
-        #F_dif =  (A ** (K)) * torch.exp(-self.dispers *A)  # (N, N)
-
-        # A_log_K = torch.where(A != 0, torch.log(A) * K.unsqueeze(-1), torch.zeros_like(A))  # (b, l, n, n)
-        # exp_term = torch.exp(-self.dispers * A)
-        # F_dif = A_log_K * exp_term  # 这里通过分步计算，确保数值稳定
-
-        F_dif = A * (K+torch.ones_like(K))
-        # Step 3: 避免数值问题
-        F_dif = torch.where(A > 0, F_dif, torch.zeros_like(F_dif))  # 排除非连接的节点
-
-        return F_dif
+    def DTWsim(self,X):
+        dtw_sim = DTWSimilarity(gamma=0.3)
+        sim_matrix = dtw_sim(X.transpose(1, 2))
+        return sim_matrix
 
     def Sipon(self,A):
         D = A.sum(dim=-1)
@@ -102,21 +90,20 @@ class SpitalDif(nn.Module):
     def forward(self, X_sptial,A,Time):
         #batch,nodes,seq,feat
         X_sptial = X_sptial.transpose(1, 2)
-
+        #X_phy = self.phy_field(X_sptial)
         #b,L,N,F
-        # X_env =self.env_fea.repeat(X.shape[0],X.shape[1],X.shape[2],1)
-        # decay_weights = torch.exp(-self.decay_factor * torch.arange(self.seq_len).view(1, -1, 1, 1).to(self.env_fea.device))
-        # decayed_env_fea =X_env * decay_weights
         # #环境特征衰减
         # X = X + decayed_env_fea
         #锚点特征增强
         #X = self.CoreNodeEnhancer(X)
         sem_matrix = self.anomaly_factors(X_sptial, A,Time)
-        A_sip = self.Sipon(A)
+        #A_sip = self.Sipon(A)
+        #DTW_sim = self.DTWsim(X_sptial)
         support = []
         support.append(sem_matrix)
-        support.append(A_sip.transpose(-1,-2))
-        support.extend(self._multi_order(A,order=2))
+        #support.append(DTW_sim.unsqueeze(1))
+        #support.append(A_sip.transpose(-1,-2))
+        #support.extend(self._multi_order(A,order=2))
         #扩散衰减矩阵聚合+原始图卷积
         Y_dif = self.gcn(X_sptial,support)
         return Y_dif.transpose(1,2)

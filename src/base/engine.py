@@ -184,6 +184,11 @@ class BaseEngine():
         preds = torch.cat(preds, dim=0)
         labels = torch.cat(labels, dim=0)
 
+        # combined = torch.cat((preds, labels), dim=-1)
+        # combined_np = combined.numpy()
+        # print("save done")
+        # np.savez('PD_data.npz', data=combined_np)
+
         # handle the precision issue when performing inverse transform to label
         mask_value = torch.tensor(0)
         if labels.min() < 1:

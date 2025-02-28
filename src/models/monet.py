@@ -22,6 +22,18 @@ class MoNet(BaseModel):
         tcn_layers = model_config['tcn_layers']
         kno_layers = model_config['kno_layers']
         #model_config['covariate_dim']
+
+        # 计算正弦值
+        sin_wave = torch.sin(torch.linspace(0, 2 * np.pi, seq_len))
+        global_feature_init = sin_wave.unsqueeze(-1)
+        # 生成与global_feature_init相同形状的随机噪声
+        noise = torch.randn_like(global_feature_init) * 0.1  # 0.1是噪声的标准差
+        global_feature = global_feature_init + noise
+
+        self.global_feature = nn.Parameter(global_feature)
+        self.preprocess = PreProcess(self.input_dim,emd_dim)
+        self.period_fun = nn.Linear(emd_dim*3, emd_dim)
+        #embedding param
         self.emb_dim = emd_dim
         self.data_embedding = nn.Linear(self.input_dim, emd_dim)
         self.tod_embedding = nn.Linear(self.input_dim, emd_dim)
@@ -37,15 +49,22 @@ class MoNet(BaseModel):
         self.out_fc_2   = nn.Linear(emd_dim//2, self.input_dim)
 
     def embedding(self,input,time,laplacian):
+        tod = self.tod_embedding(time[:,:,:,:1])
+        dow = self.dow_embedding(time[:, :, :, 1:])
+        input = self.data_embedding(input)
+        #
+        global_fea = self.global_feature.unsqueeze(0).unsqueeze(0)
+        global_fea = global_fea.repeat(input.shape[0], input.shape[1], 1,1)
+        global_fea = self.data_embedding(global_fea)
+        common_fea = self.period_fun(torch.cat([global_fea, tod,dow], dim=-1))
+        local_fea = self.preprocess(input,torch.cat([tod,dow],dim=-1))
         # 计算拉普拉斯矩阵的特征值和特征向量
         eigenvalues, eigenvectors = torch.linalg.eigh(laplacian)
         # 选择前 k 个最小的非平凡特征值对应的特征向量
         # 排除第一个特征值（通常为零），选择其余的 k 个最小特征值对应的特征向量
         x_spe = eigenvectors[:, 1:self.emb_dim + 1].unsqueeze(1)
         x_spe = x_spe.unsqueeze(0).repeat(input.shape[0],1,input.shape[2],1)
-        x_data = self.data_embedding(input)
-        x_time = self.tod_embedding(time[:,:,:,:1])+self.dow_embedding(time[:,:,:,1:])
-        return x_spe+x_data+x_time
+        return x_spe+local_fea+common_fea
     def forward(self, input,  label=None):
         #batch,len,nodes,feat
         input.transpose_(1, 2)
@@ -58,6 +77,7 @@ class MoNet(BaseModel):
         weight_inevo = 0.5*torch.ones_like(X_inevo)+self.router_weight
         weight_exdif = 0.5*torch.ones_like(X_exdif)-self.router_weight
         y_hat = weight_inevo*X_inevo + weight_exdif*X_exdif
+        #y_hat = X_inevo
         y_hat =  F.gelu(self.out_fc_1(y_hat))
         y_hat = self.out_fc_2(y_hat)
 

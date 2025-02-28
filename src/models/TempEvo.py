@@ -28,7 +28,7 @@ class TempEvo(nn.Module):
 
         self.PINN = SubSeqForcast(config,seq_len=self.seq_len,kno_layers=self.kno_layers)
         self.DNN = nn.ModuleList([LongtermForcast(config,seq_len=self.seq_len,
-                                                 input_hidden=self.hidden_channels[i], output_hidden=self.hidden_channels[i+1],tcn_layers=self.tcn_layers) for i in range(len(self.hidden_channels) - 1)])
+                                                input_hidden=self.hidden_channels[i], output_hidden=self.hidden_channels[i+1],tcn_layers=self.tcn_layers) for i in range(len(self.hidden_channels) - 1)])
         self.route_MLP = Residual(MLP(self.emd_dim,hidden_dim=self.emd_dim))
 
         self.residual = nn.ModuleList([Conv1d(self.hidden_channels[i], self.hidden_channels[i+1], 1, actv=False) for i in range(len(self.hidden_channels)-1)])
@@ -55,8 +55,8 @@ class TempEvo(nn.Module):
 
 
         weight_AI = 0.5*torch.ones_like(y_dnn)+self.router_weight
-        weight_Physics = 0.5*torch.ones_like(y_dnn)-self.router_weight
-        y_t = weight_AI*y_dnn + weight_Physics*y_pinn
+        weight_Physics = 0.5*torch.ones_like(y_pinn)-self.router_weight
+        y_t =weight_AI*y_dnn+ weight_Physics*y_pinn
         y_t = self.route_MLP(y_t)
         #loss = 5 * l_pred + 0.5 * l_recons
         return y_t

@@ -14,6 +14,33 @@ class StandardScaler():
     def inverse_transform(self, data):
         return (data * self.std) + self.mean
 
+
+class MinMaxScaler:
+    def __init__(self, feature_range=(0, 1)):
+        self.min = None
+        self.max = None
+        self.feature_range = feature_range
+
+    def fit(self, data):
+        """Compute the minimum and maximum to be used for later scaling."""
+        self.min = np.min(data, axis=0)
+        self.max = np.max(data, axis=0)
+
+    def transform(self, data):
+        """Scale the data to the specified range."""
+        data_scaled = (data - self.min) / (self.max - self.min)
+        return data_scaled * (self.feature_range[1] - self.feature_range[0]) + self.feature_range[0]
+
+    def fit_transform(self, data):
+        """Fit to data, then transform it."""
+        self.fit(data)
+        return self.transform(data)
+
+    def inverse_transform(self, data):
+        """Inverse the scaling."""
+        data_rescaled = (data - self.feature_range[0]) / (self.feature_range[1] - self.feature_range[0])
+        return data_rescaled * (self.max - self.min) + self.min
+
 def generate_graph_seq2seq_io_data(
         data, x_offsets, y_offsets, add_time_in_day=True, add_day_in_week=True, scaler=None
 ):
@@ -111,23 +138,25 @@ def generate_train_val_test(args):
 
     # normalize
     x_train = data[:idx_val[0] - args.seq_length_x, :, 0] 
-    scaler = StandardScaler(mean=x_train.mean(), std=x_train.std())
+    #scaler = StandardScaler(mean=x_train.mean(), std=x_train.std())
+    scaler = MinMaxScaler(feature_range=(0, 1))
+    scaler.fit(x_train)
     data[..., 0] = scaler.transform(data[..., 0])
 
     # save
     out_dir = 'data/'+args.dataset + '/' + args.years
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    np.savez_compressed(os.path.join(out_dir, 'his.npz'), data=data, mean=scaler.mean, std=scaler.std)
+    np.savez_compressed(os.path.join(out_dir, 'minmax_his.npz'), data=data, mean=scaler.min, std=scaler.max)
 
-    np.save(os.path.join(out_dir, 'idx_train'), idx_train)
-    np.save(os.path.join(out_dir, 'idx_val'), idx_val)
-    np.save(os.path.join(out_dir, 'idx_test'), idx_test)
+    # np.save(os.path.join(out_dir, 'idx_train'), idx_train)
+    # np.save(os.path.join(out_dir, 'idx_val'), idx_val)
+    # np.save(os.path.join(out_dir, 'idx_test'), idx_test)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='METR-LA', help='dataset name')
+    parser.add_argument('--dataset', type=str, default='PEMS-BAY', help='dataset name')
     parser.add_argument('--years', type=str, default='', help='if use data from multiple years, please use underline to separate them, e.g., 2018_2019')
     parser.add_argument('--seq_length_x', type=int, default=12, help='sequence Length')
     parser.add_argument('--seq_length_y', type=int, default=12, help='sequence Length')
