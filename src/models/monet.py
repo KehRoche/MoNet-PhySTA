@@ -49,15 +49,15 @@ class MoNet(BaseModel):
         self.fusion_embedding = nn.Linear(self.emd_dim*3, emd_dim)
 
         #path
-        from .TempEvo import SubSeqForcast
+        from .PhyField import SpectralFusionLayer
 
+        self.Field = SpectralFusionLayer(self.emd_dim, self.emd_dim,12,6,self.A)
         self.TempModule = TempEvo(model_config,self.input_dim,seq_len,hidden_dim, tcn_layers,kno_layers)
-
         self.SptialModule= SpitalDif(model_config,self.input_dim,seq_len,hidden_dim)
 
         #output_fusion
         self.output_fusion = nn.Sequential(
-            nn.Linear(emd_dim*2, emd_dim),
+            nn.Linear(emd_dim*3, emd_dim),
             nn.GELU(),
             nn.Linear(emd_dim, 1))
         self.router_weight = nn.Parameter(torch.zeros(1, 1,seq_len,emd_dim), requires_grad=True)
@@ -94,11 +94,12 @@ class MoNet(BaseModel):
         X = input[:,:,:,:self.input_dim]
         time = input[:,:,:,self.input_dim:]
         X = self.embedding(X,time,self.location,self.L)
+
+        X_phy = self.Field(X)
         X_inevo = self.TempModule(X,time)
         X_exdif = self.SptialModule(X,self.A,time)
-
-
-        y_hat = self.output_fusion(torch.cat((X_inevo,X_exdif),dim=-1))
+        #
+        y_hat = self.output_fusion(torch.cat((X_inevo,X_exdif,X_phy),dim=-1))
 
         # forecast    = self.out_fc_2(F.relu(self.out_fc_1(F.relu(forecast_hidden))))
         # forecast    = forecast.transpose(1,2).contiguous().view(forecast.shape[0], forecast.shape[2], -1)

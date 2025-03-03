@@ -97,13 +97,13 @@ class SpitalDif(nn.Module):
         #锚点特征增强
         #X = self.CoreNodeEnhancer(X)
         sem_matrix = self.anomaly_factors(X_sptial, A,Time)
-        #A_sip = self.Sipon(A)
+        A_sip = self.Sipon(A)
         #DTW_sim = self.DTWsim(X_sptial)
         support = []
         support.append(sem_matrix)
         #support.append(DTW_sim.unsqueeze(1))
-        #support.append(A_sip.transpose(-1,-2))
-        #support.extend(self._multi_order(A,order=2))
+        support.append(A_sip.transpose(-1,-2))
+        support.extend(self._multi_order(A,order=2))
         #扩散衰减矩阵聚合+原始图卷积
         Y_dif = self.gcn(X_sptial,support)
         return Y_dif.transpose(1,2)
