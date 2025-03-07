@@ -4,6 +4,10 @@ import numpy as np
 import yaml
 import sys
 import torch.nn as nn
+import optuna
+import swanlab
+
+
 
 sys.path.append(os.path.abspath(__file__ + '/../../..'))
 
@@ -55,56 +59,6 @@ def get_config(config_path):
 
     return config, log_dir, logger
 
-def nas(config):
-    from nni.nas.evaluator import FunctionalEvaluator
-    import nni
-    import nni.nas.strategy as strategy
-
-    cudnn.benchmark = True
-    if (not os.path.exists(config.model_save_path)):
-        mkdir(config.model_save_path)
-#'prior_method': 'MultiheadDilatedAttention', 'series_method': 'Inception_1d',
-    params = {
-        'anormly_ratio': 0.6,
-        'gru_dropout':0.5,
-        'd_model':128,
-        'window_size': 128,
-        'dataset': 'MSL'
-    }
-
-    optimized_params = nni.get_next_parameter()
-    params.update(optimized_params)
-    print(params)
-
-    # config.prior_method = params['prior_method']
-    # config.series_method = params['series_method']
-    config.win_size = params['window_size']
-    config.gru_dropout = params['gru_dropout']
-    config.d_model = params['d_model']
-    config.anormly_ratio = params['anormly_ratio']
-    config.dataset = params['dataset']
-    config.data_path = params['dataset']
-    if config.dataset == 'MSL':
-        config.input_c = 55
-    elif config.dataset == 'SMD':
-        config.input_c = 38
-    elif config.dataset == 'PSM':
-        config.input_c = 25
-    elif config.dataset == 'SMAP':
-        config.input_c = 25
-    elif config.dataset == 'NIPS_TS_Swan':
-        config.input_c = 38
-    elif config.dataset == 'NIPS_TS_Water':
-        config.input_c = 9
-
-
-
-    solver = Solver(vars(config))
-    solver.train()
-    _,precision, recall,f1_score=solver.test()
-    nni.report_final_result(f1_score)
-    precision = "{:.3f}".format(precision*100)
-    recall = "{:.3f}".format(recall*100)
 
 def init_weights(m):
     """分层初始化：卷积、BN、线性层差异化处理"""
@@ -126,6 +80,71 @@ def init_weights(m):
             nn.init.kaiming_normal_(m, mode='fan_in', nonlinearity='relu')
         elif 'coff' in m.name:
             nn.init.constant_(param, 1.0)
+
+
+
+def init_model(trial,config):
+    model = MoNet(input_dim=config['input_dim'],
+                  output_dim=config['output_dim'],
+                  model_config=config  # 将 config 传递给模型
+                  )
+
+    model.apply(init_weights)
+    loss_fn = masked_mae
+    optimizer = torch.optim.Adam(model.parameters(), lr=config['lrate'], weight_decay=config['wdecay'], eps=1e-8)
+    scheduler = torch.optim.lr_scheduler.MultiStepLR(optimizer, milestones=[1, 38, 46, 54, 62, 70, 80], gamma=0.5)
+
+    engine = MONET_Engine(device=device,
+                          model=model,
+                          dataloader=dataloader,
+                          scaler=scaler,
+                          sampler=None,
+                          loss_fn=loss_fn,
+                          lrate=config['lrate'],
+                          optimizer=optimizer,
+                          scheduler=scheduler,
+                          clip_grad_value=config['clip_grad_value'],
+                          max_epochs=config['max_epochs'],
+                          patience=config['patience'],
+                          log_dir=log_dir,
+                          logger=logger,
+                          seed=config['seed'],
+                          cl_step=cl_step,
+                          warm_step=warm_step,
+                          horizon=config['horizon'],
+                          tempvar_penalty=config['temp_penalty'],
+                          spatialvar_penalty=config['spital_penalty']
+                          )
+    return engine
+def objective(trial):
+
+    hype_config = {
+        "hidden_channels": trial.suggest_categorical("hidden_channels",[[16],[16,32],[16,32,64]]),
+        "tcn_layers": trial.suggest_int("tcn_layers", 1, 5),
+        "kernel_size": trial.suggest_int("kernel_size", 1, 5,step=2),
+        "dropout": trial.suggest_float("dropout", 0.1,0.4,step=0.1 ),
+        "head_dropout": trial.suggest_float("head_dropout", 0.1,0.4,step=0.1 ),
+        "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
+    }
+    run = swanlab.init(
+        project="Optuna_Tuning",
+        experiment_name=f"Trial_{trial.number}",
+        config=hype_config,
+    )
+    run.log({"hype_config":hype_config})
+    config.update({k: v for k, v in hype_config.items() if k in config})
+
+    engine = init_model(trial, config)
+    # 根据运行模式选择训练或评估
+    if config['mode'] == 'train':
+        loss = engine.train()
+    else:
+        loss = engine.evaluate(config['mode'])
+    run.log({"loss": loss})
+    torch.cuda.empty_cache()
+    del engine
+    return loss
+
 def main():
     config, log_dir, logger = get_config('config.yaml')
 
@@ -148,6 +167,9 @@ def main():
 
     cl_step = config['cl_epoch'] * dataloader['train_loader'].num_batch
     warm_step = config['warm_epoch'] * dataloader['train_loader'].num_batch
+
+
+
 
     model = MoNet(input_dim=config['input_dim'],
                   output_dim=config['output_dim'],
@@ -185,6 +207,27 @@ def main():
     if config['mode'] == 'train':
         engine.train()
     else:
-        engine.evaluate(config['mode'])
+        loss = engine.evaluate(config['mode'])
 if __name__ == "__main__":
     main()
+    # config, log_dir, logger = get_config('config.yaml')
+    # # 使用字典的方式来访问和修改
+    # set_seed(config['seed'])  # 使用 config 字典中的 'seed' 键
+    # device = torch.device(config['device'])  # 使用 config 字典中的 'device' 键
+    # # 获取数据集相关信息
+    # data_path, adj_path, node_num = get_dataset_info(config['dataset'])
+    # if(config['dataset'] == 'PEMS-BAY'):
+    #     A = load_adj_from_pickle(adj_path)[2]
+    # else:
+    #     A = load_adj_from_numpy(adj_path)
+    # config['adj'] = torch.tensor(A).to(device)
+    # location_path = data_path + '/location.npy'
+    # location = np.load(location_path)
+    # config['location'] = torch.tensor(location).to(device)
+    #
+    # dataloader, scaler = load_dataset(data_path, config, logger)
+    # cl_step = config['cl_epoch'] * dataloader['train_loader'].num_batch
+    # warm_step = config['warm_epoch'] * dataloader['train_loader'].num_batch
+    #
+    # study = optuna.create_study(direction="minimize")
+    # study.optimize(objective, n_trials=50)

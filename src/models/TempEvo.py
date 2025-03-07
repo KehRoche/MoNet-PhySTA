@@ -1,5 +1,6 @@
 import torch
 import torch.nn as nn
+import numpy as np
 import torch.nn.functional as F
 
 from .UniMoudle import *
@@ -12,6 +13,7 @@ class TempEvo(nn.Module):
         self.input_dim = input_dim
         self.seq_len = seq_len
 
+        n_heads = config['n_heads']
         self.dropout = config['dropout']
         self.device= config['device']
         self.emd_dim = config['emd_dim']
@@ -26,40 +28,40 @@ class TempEvo(nn.Module):
         self.feature_embedding = Conv1d(input_dim, self.emd_dim, 1, actv=False)
         self.side_encoding = nn.ModuleList([Conv1d(side_channels[i], side_channels[i+1], 1, dropout=self.dropout) for i in range(len(side_channels) - 1)])
 
-        self.PINN = SubSeqForcast(config,seq_len=self.seq_len,kno_layers=self.kno_layers)
+        #self.PINN = SubSeqForcast(config,seq_len=self.seq_len,kno_layers=self.kno_layers)
         self.DNN = nn.ModuleList([LongtermForcast(config,seq_len=self.seq_len,
                                                 input_hidden=self.hidden_channels[i], output_hidden=self.hidden_channels[i+1],tcn_layers=self.tcn_layers) for i in range(len(self.hidden_channels) - 1)])
-        self.route_MLP = Residual(MLP(self.emd_dim,hidden_dim=self.emd_dim))
+        #self.route_MLP = Residual(MLP(self.emd_dim,hidden_dim=self.emd_dim))
+        self.AccidentEnh = MultiHeadLocalAttention(self.emd_dim,n_heads)
+        self.gate = nn.Parameter(torch.randn(1))
 
         self.residual = nn.ModuleList([Conv1d(self.hidden_channels[i], self.hidden_channels[i+1], 1, actv=False) for i in range(len(self.hidden_channels)-1)])
         self.dnn_output = nn.Linear(self.hidden_channels[-1],self.emd_dim)
         #Opt Setting
         self.loss = torch.nn.MSELoss()
-        self.router_weight = nn.Parameter(torch.zeros(1, 1,self.seq_len,self.emd_dim), requires_grad=True)
+        #self.router_weight = nn.Parameter(torch.zeros(1, 1,self.seq_len,self.emd_dim), requires_grad=True)
 
 
     def forward(self, x,x_time):
         l_recons = 0
         #batch,nodes,len,feat
-        y_pinn = self.PINN(x)
+        #y_pinn = self.PINN(x)
+        #y_acc = self.AccidentEnh(x)
 
-        #x：batch,num_node,seq_len,feat
         for i in range(len(self.hidden_channels) - 1):
             x_resi = x.clone()
             y_dnn = self.DNN[i](x)
             x_time = self.side_encoding[i](x_time.transpose(-1, -2)).transpose(-1, -2)
             x = F.gelu(y_dnn+x_time+self.residual[i]((x_resi.transpose(-1, -2))).transpose(-1, -2))
         y_dnn = self.dnn_output(x)
-        #l_recons += self.loss(x_re.reshape(batch_size,-1),x.reshape(batch_size,-1))
-        #l_pred = self.loss(y_pred.reshape(batch_size,-1),y.reshape(batch_size,-1))
 
 
-        weight_AI = 0.5*torch.ones_like(y_dnn)+self.router_weight
-        weight_Physics = 0.5*torch.ones_like(y_pinn)-self.router_weight
-        y_t =weight_AI*y_dnn+ weight_Physics*y_pinn
-        y_t = self.route_MLP(y_t)
-        #loss = 5 * l_pred + 0.5 * l_recons
-        return y_t
+        #y = torch.sigmoid(self.gate) * y_dnn + (1 - torch.sigmoid(self.gate)) * y_acc
+        # weight_AI = 0.5*torch.ones_like(y_dnn)+self.router_weight
+        # weight_Physics = 0.5*torch.ones_like(y_pinn)-self.router_weight
+        # y_t =weight_AI*y_dnn+ weight_Physics*y_pinn
+        # y_t = self.route_MLP(y_t)
+        return y_dnn
 
 class SubSeqForcast(nn.Module):
     def __init__(self, config,seq_len,kno_layers=4, linear_type=True, normalization=False):
@@ -140,6 +142,51 @@ class KoopmanOperator1D(nn.Module):
         return x_out.transpose(-1, -2)
 
 
+class MultiHeadLocalAttention(nn.Module):
+    def __init__(self, d_model, n_heads, kernel_size=3):
+        super().__init__()
+        self.d_k = d_model // n_heads
+        self.n_heads = n_heads
+        # 局部卷积注意力门控
+        self.conv_q = Conv1d(d_model, d_model, kernel_size=kernel_size, padding='same')
+        self.conv_k = Conv1d(d_model, d_model, kernel_size=kernel_size, padding='same')
+        self.v_linear = nn.Linear(d_model, d_model)
+        # 突发事件响应门
+        self.event_gate = nn.Sequential(
+            nn.Linear(d_model, 1),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x, event_mask=None):
+        # x: [B, N, T, C]
+        B, N, T, C = x.shape
+        x_t = x.transpose(2, 3)  # [B, N, C, T]
+
+        # 局部卷积特征提取
+        q = self.conv_q(x_t).transpose(2, 3)  # [B, N, T, C]
+        k = self.conv_k(x_t).transpose(2, 3)
+        v = self.v_linear(x)
+
+        # 多头划分
+        q = q.view(B, N, T, self.n_heads, self.d_k).permute(0, 3, 1, 2, 4)  # [B, h, N, T, d_k]
+        k = k.view(B, N, T, self.n_heads, self.d_k).permute(0, 3, 1, 4, 2)
+        v = v.view(B, N, T, self.n_heads, self.d_k).permute(0, 3, 1, 2, 4)
+
+        # 因果注意力计算
+        attn = torch.matmul(q, k) / np.sqrt(self.d_k)
+
+        # 创建一个上三角矩阵遮罩
+        attn_mask = torch.triu(torch.ones(T, T, dtype=torch.bool, device=attn.device), diagonal=1)  # [T, T]
+        attn = attn.masked_fill(attn_mask, -float('inf'))
+        attn = F.softmax(attn, dim=-1)
+
+
+        # 突发事件门控增强
+        if event_mask is not None:
+            event_weights = self.event_gate(x)  # [B, N, T, 1]
+            attn = attn * event_mask.unsqueeze(1).unsqueeze(2) + event_weights.transpose(2, 3)
+
+        return torch.matmul(attn, v).transpose(1, 2).reshape(B, N, T, C)
 
 class LongtermForcast(nn.Module):
     def __init__(self,config, seq_len,input_hidden, output_hidden, tcn_layers, revin=False):
@@ -149,33 +196,32 @@ class LongtermForcast(nn.Module):
         self.output_hidden = output_hidden
         self.seq_len = seq_len
 
-        self.num_nodes = config['num_nodes']
-
-        self.patch_size = config['patch_size']
-        self.stride = config['stride']
         self.kernel_size = config['kernel_size']
-        self.patch_num = (self.seq_len - self.patch_size) // self.stride + 1
-
+        #Dropout类型	建议范围	调整策略
+        #head_dropout	0.2-0.5	随模型深度增加而提高
+        #config['dropout']	0.1-0.3	输入特征复杂度正相关
         self.dropout = config['dropout']
         self.head_dropout = config['head_dropout']
         self.depth = tcn_layers
 
-        self.DSC_blocks = nn.ModuleList([DSCLayer(input_dim=self.input_hidden, out_dim=self.output_hidden, kernel_size=self.kernel_size) for _ in range(self.depth)])
-        self.W_P = nn.Linear(self.output_hidden, self.output_hidden)
+        self.DSC_blocks = nn.ModuleList([ImprovedDSCLayer(input_dim=self.input_hidden, kernel_size=self.kernel_size) for _ in range(self.depth)])
+        self.W_P = nn.Linear(self.input_hidden, self.output_hidden)
         self.head0 = nn.Sequential(
-            nn.Linear(self.input_hidden, self.output_hidden),
+            nn.Linear(self.input_hidden, self.input_hidden),
             nn.GELU(),
             nn.Dropout(self.head_dropout),
-
         )
         self.head1 = nn.Sequential(
             nn.Flatten(start_dim=-2),
             nn.Linear(self.seq_len * self.input_hidden, self.seq_len *self.input_hidden ),
             nn.GELU(),
+            #对展平后的高维特征（维度[BN, TC_in]）进行随机屏蔽
             nn.Dropout(self.head_dropout),
-            nn.Linear(self.seq_len *self.input_hidden, self.output_hidden * self.seq_len),
+            nn.Linear(self.seq_len *self.input_hidden, self.input_hidden * self.seq_len),
+            #通过随机丢弃缓解突发流量尖峰导致的梯度爆炸
             nn.Dropout(self.head_dropout)
         )
+        #全局Dropou输入噪声注入：在RevIN归一化后增加数据扰动 模拟传感器误差：提升模型对数据采集噪声的鲁棒性
         self.dropout = nn.Dropout(self.dropout)
         self.revin = RevIN(self._num_node) if revin else None
 
@@ -183,6 +229,9 @@ class LongtermForcast(nn.Module):
         bs, num_node, _, _ = x_emd.shape
         if self.revin:
             x_emd = self.revin(x_emd, 'norm')
+
+        #   分支1 (head0)	Linear + GELU	全局特征捕捉
+        #   分支2	多层DSC卷积	局部时序模式提取
         x_emd = self.dropout(x_emd)
         u = self.head0(x_emd)
         x_emd = x_emd.transpose(-1, -2)

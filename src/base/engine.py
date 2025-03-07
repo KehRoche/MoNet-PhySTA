@@ -126,12 +126,6 @@ class BaseEngine():
         min_loss = np.inf
         for epoch in range(self._max_epochs):
             t1 = time.time()
-            prof = torch.profiler.profile(
-                schedule=torch.profiler.schedule(wait=1, warmup=1, active=3, repeat=1),
-                on_trace_ready=torch.profiler.tensorboard_trace_handler('./log/monet'),
-                record_shapes=True,
-                with_stack=True)
-            prof.start()
             mtrain_loss, mtrain_mape, mtrain_rmse = self.train_batch()
             t2 = time.time()
 
@@ -161,7 +155,8 @@ class BaseEngine():
                     self._logger.info('Early stop at epoch {}, loss = {:.6f}'.format(epoch + 1, min_loss))
                     break
 
-        self.evaluate('test')
+        loss = self.evaluate('test')
+        return loss
 
 
     def evaluate(self, mode):
@@ -215,3 +210,4 @@ class BaseEngine():
 
             log = 'Average Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}'
             self._logger.info(log.format(np.mean(test_mae), np.mean(test_rmse), np.mean(test_mape)))
+            return np.mean(test_mae)

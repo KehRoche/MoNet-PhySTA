@@ -78,7 +78,7 @@ class MoNet(BaseModel):
         global_fea = self.data_embedding(global_fea)
 
         #依赖共性变量学习周期性特征
-        common_fea = self.period_fun(torch.concat([global_fea, tod,dow], dim=-1))
+        #common_fea = self.period_fun(torch.concat([global_fea, tod,dow], dim=-1))
         local_fea = self.dyn_gate(input,condition_info)
         # 计算拉普拉斯矩阵的特征值和特征向量
         eigenvalues, eigenvectors = torch.linalg.eigh(laplacian)
@@ -87,7 +87,7 @@ class MoNet(BaseModel):
         x_spe = eigenvectors[:, 1:self.emd_dim + 1].unsqueeze(1)
         x_spe = x_spe.unsqueeze(0).repeat(input.shape[0],1,input.shape[2],1)
         #x_spe+
-        return local_fea+common_fea
+        return local_fea#+common_fea
     def forward(self, input,  label=None):
         #batch,len,nodes,feat
         input.transpose_(1, 2)

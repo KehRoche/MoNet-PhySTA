@@ -26,6 +26,27 @@ class DSCLayer(nn.Module):
         return x
 
 
+class ImprovedDSCLayer(nn.Module):
+    def __init__(self, input_dim, kernel_size=4):
+        super().__init__()
+        # 添加跨通道交互
+        self.channel_mixer = Conv1d(input_dim, input_dim, kernel_size=1)
+        self.depthwise = Conv1d(input_dim, input_dim, kernel_size=kernel_size,
+                                   groups=input_dim, padding='same')
+        self.activation = nn.GELU()
+        # 使用自适应归一化
+        self.norm = nn.InstanceNorm1d(input_dim)
+
+    def forward(self, x):
+        identity = x
+        b, n,t,c = x.shape
+        x = self.channel_mixer(x)  # 跨通道交互
+        x = self.depthwise(x)
+        x = self.activation(x)+ identity
+        x = self.norm(x.reshape(b*n,t,c))
+        return x.reshape(b,n,t,c)
+
+
 class DynmiacGate(nn.Module):
     def __init__(self, input_dim,emd_dim):
         super().__init__()
@@ -109,6 +130,25 @@ class DTWSimilarity:
 
         torch.cuda.synchronize()
         return results
+
+
+class AdaptiveRevIN(nn.Module):
+    def __init__(self, op_dim):
+        super().__init__()
+        self.lstm = nn.LSTM(input_size=op_dim, hidden_size=op_dim*2)
+        self.mu_layer = nn.Linear(op_dim*2, op_dim)
+        self.sigma_layer = nn.Linear(op_dim*2, op_dim)
+
+    def norm(self, x):
+        # x: [B, N, T, C]
+        context = self.lstm(x.mean(dim=2))[1][0]  # 时间维度聚合
+        mu = self.mu_layer(context)
+        sigma = self.sigma_layer(context)
+        return (x - mu.unsqueeze(2)) / (sigma.unsqueeze(2) + 1e-6)
+
+    def denorm(self, x_norm, original_x):
+        # 反向计算使用原始数据的统计量
+        return x_norm * original_x.std(dim=2, keepdim=True) + original_x.mean(dim=2, keepdim=True)
 
 class RevIN(nn.Module):
     def __init__(self, num_features: int, eps=1e-5, affine=True, subtract_last=False):
