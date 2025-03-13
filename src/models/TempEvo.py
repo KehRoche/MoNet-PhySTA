@@ -25,35 +25,43 @@ class TempEvo(nn.Module):
         self.kno_layers = kno_layers
         self.tcn_layers = tcn_layers
 
-        self.feature_embedding = Conv1d(input_dim, self.emd_dim, 1, actv=False)
-        self.side_encoding = nn.ModuleList([Conv1d(side_channels[i], side_channels[i+1], 1, dropout=self.dropout) for i in range(len(side_channels) - 1)])
-
-        #self.PINN = SubSeqForcast(config,seq_len=self.seq_len,kno_layers=self.kno_layers)
-        self.DNN = nn.ModuleList([LongtermForcast(config,seq_len=self.seq_len,
-                                                input_hidden=self.hidden_channels[i], output_hidden=self.hidden_channels[i+1],tcn_layers=self.tcn_layers) for i in range(len(self.hidden_channels) - 1)])
-        #self.route_MLP = Residual(MLP(self.emd_dim,hidden_dim=self.emd_dim))
-        self.AccidentEnh = MultiHeadLocalAttention(self.emd_dim,n_heads)
-        self.gate = nn.Parameter(torch.randn(1))
-
-        self.residual = nn.ModuleList([Conv1d(self.hidden_channels[i], self.hidden_channels[i+1], 1, actv=False) for i in range(len(self.hidden_channels)-1)])
-        self.dnn_output = nn.Linear(self.hidden_channels[-1],self.emd_dim)
+        # self.feature_embedding = Conv1d(input_dim, self.emd_dim, 1, actv=False)
+        # self.side_encoding = nn.ModuleList([Conv1d(side_channels[i], side_channels[i+1], 1, dropout=self.dropout) for i in range(len(side_channels) - 1)])
+        #
+        # #self.PINN = SubSeqForcast(config,seq_len=self.seq_len,kno_layers=self.kno_layers)
+        # self.DNN = nn.ModuleList([LongtermForcast(config,seq_len=self.seq_len,
+        #                                         input_hidden=self.hidden_channels[i], output_hidden=self.hidden_channels[i+1],tcn_layers=self.tcn_layers) for i in range(len(self.hidden_channels) - 1)])
+        # #self.route_MLP = Residual(MLP(self.emd_dim,hidden_dim=self.emd_dim))
+        # self.AccidentEnh = MultiHeadLocalAttention(self.emd_dim,n_heads)
+        # self.gate = nn.Parameter(torch.randn(1))
+        #
+        # self.residual = nn.ModuleList([Conv1d(self.hidden_channels[i], self.hidden_channels[i+1], 1, actv=False) for i in range(len(self.hidden_channels)-1)])
+        # self.dnn_output = nn.Linear(self.hidden_channels[-1],self.emd_dim)
         #Opt Setting
         self.loss = torch.nn.MSELoss()
         #self.router_weight = nn.Parameter(torch.zeros(1, 1,self.seq_len,self.emd_dim), requires_grad=True)
 
+        self.time_series_emb_layer = nn.Conv2d(
+            in_channels=self.emd_dim * self.seq_len, out_channels=self.emd_dim * self.seq_len, kernel_size=(1, 1), bias=True)
+        self.encoder = nn.Sequential(*[MultiLayerPerceptron(self.emd_dim * self.seq_len, self.emd_dim * self.seq_len) for _ in range(self.tcn_layers)])
 
     def forward(self, x,x_time):
         l_recons = 0
         #batch,nodes,len,feat
+        b,n,t,f = x.shape
         #y_pinn = self.PINN(x)
         #y_acc = self.AccidentEnh(x)
 
-        for i in range(len(self.hidden_channels) - 1):
-            x_resi = x.clone()
-            y_dnn = self.DNN[i](x)
-            x_time = self.side_encoding[i](x_time.transpose(-1, -2)).transpose(-1, -2)
-            x = F.gelu(y_dnn+x_time+self.residual[i]((x_resi.transpose(-1, -2))).transpose(-1, -2))
-        y_dnn = self.dnn_output(x)
+        # for i in range(len(self.hidden_channels) - 1):
+        #     x_resi = x.clone()
+        #     y_dnn = self.DNN[i](x)
+        #     x_time = self.side_encoding[i](x_time.transpose(-1, -2)).transpose(-1, -2)
+        #     x = F.gelu(y_dnn+x_time+self.residual[i]((x_resi.transpose(-1, -2))).transpose(-1, -2))
+        # y_dnn = self.dnn_output(x)
+        x = x.view(b,n,-1).transpose(1,2).unsqueeze(-1).contiguous()
+        x = self.encoder(x)
+        y = self.time_series_emb_layer(x)
+        y = y.squeeze(-1).transpose(1,2).view(b,n,t,f).contiguous()
 
 
         #y = torch.sigmoid(self.gate) * y_dnn + (1 - torch.sigmoid(self.gate)) * y_acc
@@ -61,7 +69,7 @@ class TempEvo(nn.Module):
         # weight_Physics = 0.5*torch.ones_like(y_pinn)-self.router_weight
         # y_t =weight_AI*y_dnn+ weight_Physics*y_pinn
         # y_t = self.route_MLP(y_t)
-        return y_dnn
+        return y
 
 class SubSeqForcast(nn.Module):
     def __init__(self, config,seq_len,kno_layers=4, linear_type=True, normalization=False):
@@ -245,4 +253,32 @@ class LongtermForcast(nn.Module):
         if self.revin:
             out = self.revin(out, 'denorm')
         return out
+
+class MultiLayerPerceptron(nn.Module):
+    """Multi-Layer Perceptron with residual links."""
+
+    def __init__(self, input_dim, hidden_dim) -> None:
+        super().__init__()
+        self.fc1 = nn.Conv2d(
+            in_channels=input_dim,  out_channels=hidden_dim, kernel_size=(1, 1), bias=True)
+        self.fc2 = nn.Conv2d(
+            in_channels=hidden_dim, out_channels=hidden_dim, kernel_size=(1, 1), bias=True)
+        self.act = nn.ReLU()
+        self.drop = nn.Dropout(p=0.15)
+
+    def forward(self, input_data: torch.Tensor) -> torch.Tensor:
+        """Feed forward of MLP.
+
+        Args:
+            input_data (torch.Tensor): input data with shape [B, D, N]
+
+        Returns:
+            torch.Tensor: latent repr
+        """
+
+        hidden = self.fc2(self.drop(self.act(self.fc1(input_data))))      # MLP
+        hidden = hidden + input_data                           # residual
+        return hidden
+
+
 

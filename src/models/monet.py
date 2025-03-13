@@ -41,6 +41,7 @@ class MoNet(BaseModel):
         self.dyn_gate = DynmiacGate(self.input_dim,emd_dim)
         self.period_fun = nn.Linear(emd_dim*2, emd_dim)
         #embedding param
+        self.emb_way = model_config['emb_way']
         self.emd_dim = emd_dim
         self.data_embedding = nn.Linear(self.input_dim, emd_dim)
         self.tod_embedding = nn.Linear(self.input_dim, emd_dim//2)
@@ -57,49 +58,53 @@ class MoNet(BaseModel):
 
         #output_fusion
         self.output_fusion = nn.Sequential(
-            nn.Linear(emd_dim*3, emd_dim),
+            nn.Linear(emd_dim*3, emd_dim//2),
             nn.GELU(),
-            nn.Linear(emd_dim, 1))
-        self.router_weight = nn.Parameter(torch.zeros(1, 1,seq_len,emd_dim), requires_grad=True)
-        self.out_fc_1   = nn.Linear(emd_dim, emd_dim//2)
-        self.out_fc_2   = nn.Linear(emd_dim//2, self.input_dim)
+            nn.Linear(emd_dim//2, 1))
+        # self.router_weight = nn.Parameter(torch.zeros(1, 1,seq_len,emd_dim), requires_grad=True)
+        # self.out_fc_1   = nn.Linear(emd_dim, emd_dim//2)
+        # self.out_fc_2   = nn.Linear(emd_dim//2, self.input_dim)
 
-    def embedding(self,input,time,location,laplacian):
+    def embedding(self,input,time,location,laplacian,embway="SOP"):
         tod = self.tod_embedding(time[:,:,:,:1])
         dow = self.dow_embedding(time[:, :, :, 1:])
         xyz = self.loaction_embedding(location)
         condition_info = F.gelu(torch.concat((tod, dow, xyz), dim=-1))
         input = self.data_embedding(input)
         input = self.fusion_embedding(torch.cat((input,condition_info), dim=-1))
+        emb_fea = self.dyn_gate(input,condition_info)
 
 
-        global_fea = self.global_feature.unsqueeze(0).unsqueeze(0)
-        global_fea = global_fea.repeat(input.shape[0], input.shape[1], 1,1)
-        global_fea = self.data_embedding(global_fea)
-
-        #依赖共性变量学习周期性特征
-        #common_fea = self.period_fun(torch.concat([global_fea, tod,dow], dim=-1))
-        local_fea = self.dyn_gate(input,condition_info)
-        # 计算拉普拉斯矩阵的特征值和特征向量
-        eigenvalues, eigenvectors = torch.linalg.eigh(laplacian)
-        # 选择前 k 个最小的非平凡特征值对应的特征向量
-        # 排除第一个特征值（通常为零），选择其余的 k 个最小特征值对应的特征向量
-        x_spe = eigenvectors[:, 1:self.emd_dim + 1].unsqueeze(1)
-        x_spe = x_spe.unsqueeze(0).repeat(input.shape[0],1,input.shape[2],1)
-        #x_spe+
-        return local_fea#+common_fea
+        if('P' in embway):
+            global_fea = self.global_feature.unsqueeze(0).unsqueeze(0)
+            global_fea = global_fea.repeat(input.shape[0], input.shape[1], 1,1)
+            global_fea = self.data_embedding(global_fea)
+            #依赖共性变量学习周期性特征
+            common_fea = self.period_fun(torch.concat([global_fea, tod,dow], dim=-1))
+            emb_fea = emb_fea + common_fea
+        if('S' in embway):
+            # 计算拉普拉斯矩阵的特征值和特征向量
+            eigenvalues, eigenvectors = torch.linalg.eigh(laplacian)
+            # 选择前 k 个最小的非平凡特征值对应的特征向量
+            # 排除第一个特征值（通常为零），选择其余的 k 个最小特征值对应的特征向量
+            x_spe = eigenvectors[:, 1:self.emd_dim + 1].unsqueeze(1)
+            x_spe = x_spe.unsqueeze(0).repeat(input.shape[0],1,input.shape[2],1)
+            emb_fea = emb_fea + x_spe
+        return emb_fea
     def forward(self, input,  label=None):
         #batch,len,nodes,feat
         input.transpose_(1, 2)
         X = input[:,:,:,:self.input_dim]
         time = input[:,:,:,self.input_dim:]
-        X = self.embedding(X,time,self.location,self.L)
+        X = self.embedding(X,time,self.location,self.L,self.emb_way)
 
         X_phy = self.Field(X)
         X_inevo = self.TempModule(X,time)
         X_exdif = self.SptialModule(X,self.A,time)
-        #
-        y_hat = self.output_fusion(torch.cat((X_inevo,X_exdif,X_phy),dim=-1))
+        #,X_exdif，X_inevo,X_phy
+        y_hat = self.output_fusion(torch.cat((X_inevo,X_phy,X_exdif),dim=-1))
+        #y_hat = self.output_fusion(X_inevo)
+
 
         # forecast    = self.out_fc_2(F.relu(self.out_fc_1(F.relu(forecast_hidden))))
         # forecast    = forecast.transpose(1,2).contiguous().view(forecast.shape[0], forecast.shape[2], -1)

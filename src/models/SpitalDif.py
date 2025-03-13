@@ -24,7 +24,8 @@ class SpitalDif(nn.Module):
         init_lambda = 0.01
         num_matric = config['num_gconv']
 
-        self.gcn = UnetGCN(hidden_dims,num_matric)
+        #self.gcn = UnetGCN(hidden_dims,num_matric)
+        self.gcn = GraphConvLayer(self.emd_dim,self.emd_dim,num_matric)
         self.dropout = nn.Dropout(config['dropout'])
 
         self.out_linear = nn.Linear(self.emd_dim, self.emd_dim)
@@ -96,16 +97,17 @@ class SpitalDif(nn.Module):
         # X = X + decayed_env_fea
         #锚点特征增强
         #X = self.CoreNodeEnhancer(X)
-        sem_matrix = self.anomaly_factors(X_sptial, A,Time)
-        A_sip = self.Sipon(A)
+        #sem_matrix = self.anomaly_factors(X_sptial, A,Time)
+        #A_sip = self.Sipon(A)
         #DTW_sim = self.DTWsim(X_sptial)
         support = []
-        support.append(sem_matrix)
+        #support.append(sem_matrix)
         #support.append(DTW_sim.unsqueeze(1))
-        support.append(A_sip.transpose(-1,-2))
-        support.extend(self._multi_order(A,order=2))
+        #support.append(A_sip.transpose(-1,-2))
+        #support.append(A)
+        support.extend(self._multi_order(A,order=3))
         #扩散衰减矩阵聚合+原始图卷积
-        Y_dif = self.gcn(X_sptial,support)
+        Y_dif = self.gcn(support,X_sptial)
         return Y_dif.transpose(1,2)
 
 
@@ -131,14 +133,18 @@ class GraphConvLayer(nn.Module):
         super(GraphConvLayer, self).__init__()
         self.out_channels = out_channels
         self.gcn_updt = nn.Linear(in_channels*num_adjs, out_channels)
-        self.bn = nn.BatchNorm1d(out_channels)
+        self.fc_list_updt = nn.Linear(
+            in_channels, in_channels, bias=False)
+        self.bn = nn.BatchNorm2d(out_channels)
+        self.act = nn.ReLU()
 
     def forward(self,support,X):
+        X = self.fc_list_updt(X)
         out = [X]
         for graph in support:
             H_k = torch.matmul(graph, X)
             out.append(H_k)
         out = torch.cat(out, dim=-1)
         out = self.gcn_updt(out)
-        out = F.gelu((self.bn(out.view(-1, out.shape[-1]))))
-        return out.reshape(X.shape[0],X.shape[1],X.shape[2],-1)
+        out = self.act((self.bn(out.transpose(1,3))))
+        return out.transpose(1,3)

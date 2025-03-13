@@ -119,8 +119,8 @@ class BaseEngine():
         return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
 
 
-    def train(self):
-        self._logger.info('Start training!')
+    def train(self,swanlab_run):
+        #self._logger.info('Start training!')
 
         wait = 0
         min_loss = np.inf
@@ -130,7 +130,7 @@ class BaseEngine():
             t2 = time.time()
 
             v1 = time.time()
-            mvalid_loss, mvalid_mape, mvalid_rmse = self.evaluate('val')
+            mvalid_loss, mvalid_mape, mvalid_rmse = self.evaluate('val',swanlab_run)
             v2 = time.time()
 
             if self._lr_scheduler is None:
@@ -139,10 +139,10 @@ class BaseEngine():
                 cur_lr = self._lr_scheduler.get_last_lr()[0]
                 self._lr_scheduler.step()
 
-            message = 'Epoch: {:03d}, Train Loss: {:.4f}, Train RMSE: {:.4f}, Train MAPE: {:.4f}, Valid Loss: {:.4f}, Valid RMSE: {:.4f}, Valid MAPE: {:.4f}, Train Time: {:.4f}s/epoch, Valid Time: {:.4f}s, LR: {:.4e}'
-            self._logger.info(message.format(epoch + 1, mtrain_loss, mtrain_rmse, mtrain_mape, \
-                                             mvalid_loss, mvalid_rmse, mvalid_mape, \
-                                             (t2 - t1), (v2 - v1), cur_lr))
+            # message = 'Epoch: {:03d}, Train Loss: {:.4f}, Train RMSE: {:.4f}, Train MAPE: {:.4f}, Valid Loss: {:.4f}, Valid RMSE: {:.4f}, Valid MAPE: {:.4f}, Train Time: {:.4f}s/epoch, Valid Time: {:.4f}s, LR: {:.4e}'
+            # self._logger.info(message.format(epoch + 1, mtrain_loss, mtrain_rmse, mtrain_mape, \
+            #                                  mvalid_loss, mvalid_rmse, mvalid_mape, \
+            #                                  (t2 - t1), (v2 - v1), cur_lr))
 
             if mvalid_loss < min_loss:
                 self.save_model(self._save_path)
@@ -154,12 +154,21 @@ class BaseEngine():
                 if wait == self._patience:
                     self._logger.info('Early stop at epoch {}, loss = {:.6f}'.format(epoch + 1, min_loss))
                     break
-
-        loss = self.evaluate('test')
+            train_info = {"train_time":(t2-t1),
+                          "train_loss": mtrain_loss,
+                          "train_mape": mtrain_mape,
+                          "train_rmse": mtrain_rmse,
+                          "valid_time":(v2-v1),
+                          "valid_loss": mvalid_loss,
+                          "valid_mape": mvalid_mape,
+                          "valid_rmse": mvalid_rmse,
+            }
+            swanlab_run.log(train_info)
+        loss = self.evaluate('test',swanlab_run)
         return loss
 
 
-    def evaluate(self, mode):
+    def evaluate(self, mode,swanlab_run):
         if mode == 'test':
             self.load_model(self._save_path)
         self.model.eval()
@@ -170,6 +179,22 @@ class BaseEngine():
             for X, label in self._dataloader[mode + '_loader'].get_iterator():
                 # X (b, t, n, f), label (b, t, n, 1)
                 X, label = self._to_device(self._to_tensor([X, label]))
+                if mode == 'test':
+                    #nosie add
+                    batch_size, time_steps, num_nodes, num_features = X.shape
+                    num_replace = max(1, int(num_nodes * 0.1))  # 至少替换 1 个节点
+                    assert num_replace <= num_nodes, "num_replace cannot exceed num_nodes"
+                    replace_indices = torch.randperm(num_nodes, device=X.device)[:num_replace]
+                    # 关键修复2：显式约束索引范围
+                    replace_indices = torch.clamp(replace_indices, 0, num_nodes - 1)
+
+                    # 更换为高斯噪声
+                    mean = 0.0  # 高斯分布的均值
+                    std_dev = 1.0  # 高斯分布的标准差
+                    random_values = mean + std_dev * torch.randn((batch_size, time_steps, num_replace, 1),
+                                                                 device=X.device)
+                    X[:, :, replace_indices, :1] = random_values
+                    X = X.contiguous()
                 pred = self.model(X, label)
                 pred, label = self._inverse_transform([pred, label])
 
@@ -204,6 +229,9 @@ class BaseEngine():
                 res = compute_all_metrics(preds[:,i,:], labels[:,i,:], mask_value)
                 log = 'Horizon {:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}'
                 self._logger.info(log.format(i + 1, res[0], res[2], res[1]))
+                swanlab_run.log({"test_mae":res[0]})
+                swanlab_run.log({"test_mape":res[1]})
+                swanlab_run.log({"test_rmse":res[2]})
                 test_mae.append(res[0])
                 test_mape.append(res[1])
                 test_rmse.append(res[2])

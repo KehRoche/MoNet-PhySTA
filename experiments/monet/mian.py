@@ -82,13 +82,14 @@ def init_weights(m):
             nn.init.constant_(param, 1.0)
 
 
-
-def init_model(trial,config):
+def init_model(trial,config,dataloader,scaler, log_dir, logger):
     model = MoNet(input_dim=config['input_dim'],
                   output_dim=config['output_dim'],
                   model_config=config  # 将 config 传递给模型
                   )
-
+    device = torch.device(config['device'])  # 使用 config 字典中的 'device' 键
+    cl_step = config['cl_epoch'] * dataloader['train_loader'].num_batch
+    warm_step = config['warm_epoch'] * dataloader['train_loader'].num_batch
     model.apply(init_weights)
     loss_fn = masked_mae
     optimizer = torch.optim.Adam(model.parameters(), lr=config['lrate'], weight_decay=config['wdecay'], eps=1e-8)
@@ -118,29 +119,50 @@ def init_model(trial,config):
     return engine
 def objective(trial):
 
+    config, log_dir, logger = get_config('config.yaml')
+    # 使用字典的方式来访问和修改
+    #set_seed(config['seed'])  # 使用 config 字典中的 'seed' 键
+    device = torch.device(config['device'])  # 使用 config 字典中的 'device' 键
+    #S 空间图信息编码，P周期信息编码
     hype_config = {
-        "hidden_channels": trial.suggest_categorical("hidden_channels",[[16],[16,32],[16,32,64]]),
-        "tcn_layers": trial.suggest_int("tcn_layers", 1, 5),
-        "kernel_size": trial.suggest_int("kernel_size", 1, 5,step=2),
-        "dropout": trial.suggest_float("dropout", 0.1,0.4,step=0.1 ),
-        "head_dropout": trial.suggest_float("head_dropout", 0.1,0.4,step=0.1 ),
-        "batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
+        #"hidden_channels": trial.suggest_categorical("hidden_channels",[[16],[16,32],[16,32,64]]),
+        #"tcn_layers": trial.suggest_int("tcn_layers", 1, 5),
+        #"kernel_size": trial.suggest_int("kernel_size", 1, 5,step=2),
+        #"GBA","SD",
+        "dataset": trial.suggest_categorical("dataset",["PEMS-BAY"]),
+        #"emb_way": trial.suggest_categorical("emb_way", ["SOP","SO","OP","O"]),
+        #"dropout": trial.suggest_float("dropout", 0.1,0.4,step=0.1 ),
+        #"head_dropout": trial.suggest_float("head_dropout", 0.1,0.4,step=0.1 ),
+        #"batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
     }
     run = swanlab.init(
         project="Optuna_Tuning",
         experiment_name=f"Trial_{trial.number}",
         config=hype_config,
     )
-    run.log({"hype_config":hype_config})
     config.update({k: v for k, v in hype_config.items() if k in config})
 
-    engine = init_model(trial, config)
+    # 获取数据集相关信息
+    data_path, adj_path, node_num = get_dataset_info(config['dataset'])
+    if(config['dataset'] == 'PEMS-BAY'):
+        A = load_adj_from_pickle(adj_path)[2]
+    else:
+        A = load_adj_from_numpy(adj_path)
+    config['adj'] = torch.tensor(A).to(device).float()
+    location_path = data_path + '/location.npy'
+    location = np.load(location_path)
+    config['location'] = torch.tensor(location).to(device)
+
+    dataloader, scaler = load_dataset(data_path, config, logger)
+
+    engine = init_model(trial, config,dataloader,scaler, log_dir, logger )
     # 根据运行模式选择训练或评估
     if config['mode'] == 'train':
-        loss = engine.train()
+        loss = engine.train(run)
     else:
-        loss = engine.evaluate(config['mode'])
+        loss = engine.evaluate(config['mode'],run)
     run.log({"loss": loss})
+    swanlab.finish()
     torch.cuda.empty_cache()
     del engine
     return loss
@@ -159,7 +181,7 @@ def main():
         A = load_adj_from_pickle(adj_path)[2]
     else:
         A = load_adj_from_numpy(adj_path)
-    config['adj'] = torch.tensor(A).to(device)
+    config['adj'] = torch.tensor(A).to(device).float()
     location_path = data_path + '/location.npy'
     location = np.load(location_path)
     config['location'] = torch.tensor(location).to(device)
@@ -209,25 +231,6 @@ def main():
     else:
         loss = engine.evaluate(config['mode'])
 if __name__ == "__main__":
-    main()
-    # config, log_dir, logger = get_config('config.yaml')
-    # # 使用字典的方式来访问和修改
-    # set_seed(config['seed'])  # 使用 config 字典中的 'seed' 键
-    # device = torch.device(config['device'])  # 使用 config 字典中的 'device' 键
-    # # 获取数据集相关信息
-    # data_path, adj_path, node_num = get_dataset_info(config['dataset'])
-    # if(config['dataset'] == 'PEMS-BAY'):
-    #     A = load_adj_from_pickle(adj_path)[2]
-    # else:
-    #     A = load_adj_from_numpy(adj_path)
-    # config['adj'] = torch.tensor(A).to(device)
-    # location_path = data_path + '/location.npy'
-    # location = np.load(location_path)
-    # config['location'] = torch.tensor(location).to(device)
-    #
-    # dataloader, scaler = load_dataset(data_path, config, logger)
-    # cl_step = config['cl_epoch'] * dataloader['train_loader'].num_batch
-    # warm_step = config['warm_epoch'] * dataloader['train_loader'].num_batch
-    #
-    # study = optuna.create_study(direction="minimize")
-    # study.optimize(objective, n_trials=50)
+    #main()
+    study = optuna.create_study(direction="minimize")
+    study.optimize(objective, n_trials=50)
