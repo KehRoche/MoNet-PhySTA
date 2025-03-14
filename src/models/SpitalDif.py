@@ -14,15 +14,20 @@ class SpitalDif(nn.Module):
         self.input_dim = input_dim
         self.seq_len = seq_len
         self.emd_dim = config['emd_dim']
+        num_nodes = config['num_nodes']
         hidden_dims = config['hidden_channels']
         #转移矩阵
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
         #self.core_index = config['core_index']
-        self._time_emb_dim = config['time_emb_dim']
 
         init_decay = 1
         init_lambda = 0.01
         num_matric = config['num_gconv']
+        self.adp_adj = config['adp_adj']
+        if self.adp_adj:
+            self.nodevec1 = nn.Parameter(torch.randn(num_nodes, 16), requires_grad=True)
+            self.nodevec2 = nn.Parameter(torch.randn(16, num_nodes), requires_grad=True)
+            num_matric = num_matric+1
 
         #self.gcn = UnetGCN(hidden_dims,num_matric)
         self.gcn = GraphConvLayer(self.emd_dim,self.emd_dim,num_matric)
@@ -91,21 +96,25 @@ class SpitalDif(nn.Module):
     def forward(self, X_sptial,A,Time):
         #batch,nodes,seq,feat
         X_sptial = X_sptial.transpose(1, 2)
+        support = []
+        if self.adp_adj:
+            adp = F.softmax(F.relu(torch.mm(self.nodevec1, self.nodevec2)), dim=1)
+            support.append(adp)
         #X_phy = self.phy_field(X_sptial)
         #b,L,N,F
         # #环境特征衰减
         # X = X + decayed_env_fea
         #锚点特征增强
         #X = self.CoreNodeEnhancer(X)
-        #sem_matrix = self.anomaly_factors(X_sptial, A,Time)
-        #A_sip = self.Sipon(A)
+        sem_matrix = self.anomaly_factors(X_sptial, A,Time)
+        A_sip = self.Sipon(A)
         #DTW_sim = self.DTWsim(X_sptial)
-        support = []
-        #support.append(sem_matrix)
+
+        support.append(sem_matrix)
         #support.append(DTW_sim.unsqueeze(1))
-        #support.append(A_sip.transpose(-1,-2))
-        #support.append(A)
-        support.extend(self._multi_order(A,order=3))
+        support.append(A_sip)
+        support.append(A)
+        #support.extend(self._multi_order(A,order=3))
         #扩散衰减矩阵聚合+原始图卷积
         Y_dif = self.gcn(support,X_sptial)
         return Y_dif.transpose(1,2)

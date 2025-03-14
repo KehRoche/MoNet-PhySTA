@@ -16,7 +16,7 @@ class TempEvo(nn.Module):
         n_heads = config['n_heads']
         self.dropout = config['dropout']
         self.device= config['device']
-        self.emd_dim = config['emd_dim']
+        self.emd_dim = config['emd_dim']*4
         self.hidden_channels = config['hidden_channels']
         side_channels = [config['covariate_dim']]+ self.hidden_channels
         self.hidden_channels = [self.emd_dim] +  self.hidden_channels
@@ -42,8 +42,8 @@ class TempEvo(nn.Module):
         #self.router_weight = nn.Parameter(torch.zeros(1, 1,self.seq_len,self.emd_dim), requires_grad=True)
 
         self.time_series_emb_layer = nn.Conv2d(
-            in_channels=self.emd_dim * self.seq_len, out_channels=self.emd_dim * self.seq_len, kernel_size=(1, 1), bias=True)
-        self.encoder = nn.Sequential(*[MultiLayerPerceptron(self.emd_dim * self.seq_len, self.emd_dim * self.seq_len) for _ in range(self.tcn_layers)])
+            in_channels=self.emd_dim, out_channels=self.seq_len, kernel_size=(1, 1), bias=True)
+        self.encoder = nn.Sequential(*[MultiLayerPerceptron(self.emd_dim, self.emd_dim) for _ in range(self.tcn_layers)])
 
     def forward(self, x,x_time):
         l_recons = 0
@@ -58,17 +58,10 @@ class TempEvo(nn.Module):
         #     x_time = self.side_encoding[i](x_time.transpose(-1, -2)).transpose(-1, -2)
         #     x = F.gelu(y_dnn+x_time+self.residual[i]((x_resi.transpose(-1, -2))).transpose(-1, -2))
         # y_dnn = self.dnn_output(x)
-        x = x.view(b,n,-1).transpose(1,2).unsqueeze(-1).contiguous()
+        #x = x.view(b,n,-1).transpose(1,2).unsqueeze(-1).contiguous()
         x = self.encoder(x)
         y = self.time_series_emb_layer(x)
-        y = y.squeeze(-1).transpose(1,2).view(b,n,t,f).contiguous()
-
-
-        #y = torch.sigmoid(self.gate) * y_dnn + (1 - torch.sigmoid(self.gate)) * y_acc
-        # weight_AI = 0.5*torch.ones_like(y_dnn)+self.router_weight
-        # weight_Physics = 0.5*torch.ones_like(y_pinn)-self.router_weight
-        # y_t =weight_AI*y_dnn+ weight_Physics*y_pinn
-        # y_t = self.route_MLP(y_t)
+        #y = y.squeeze(-1).transpose(1,2).view(b,n,t,f).contiguous()
         return y
 
 class SubSeqForcast(nn.Module):
