@@ -16,7 +16,7 @@ class TempEvo(nn.Module):
         n_heads = config['n_heads']
         self.dropout = config['dropout']
         self.device= config['device']
-        self.emd_dim = config['emd_dim']*4
+        self.emd_dim = hidden_dim*seq_len
         self.hidden_channels = config['hidden_channels']
         side_channels = [config['covariate_dim']]+ self.hidden_channels
         self.hidden_channels = [self.emd_dim] +  self.hidden_channels

@@ -16,6 +16,6 @@ def get_public_config():
     parser.add_argument('--output_dim', type=int, default=1)
 
     parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--max_epochs', type=int, default=100)
-    parser.add_argument('--patience', type=int, default=30)
+    parser.add_argument('--max_epochs', type=int, default=30)
+    parser.add_argument('--patience', type=int, default=5)
     return parser

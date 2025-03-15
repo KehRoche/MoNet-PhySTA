@@ -69,6 +69,8 @@ class SpectralFusionLayer(nn.Module):
             in_feat, out_feat, graph_modes, time_modes, 2))
         self.weights_quad4 = nn.Parameter(torch.randn(
             in_feat, out_feat, graph_modes, time_modes, 2))
+        
+        self.output = nn.Linear(out_feat, 1)
 
     def compl_mul(self, x_ft, weights):
         # 复数乘法分解为实部虚部分别计算 (batch, in, modes, modes) * (in, out, modes, modes)
@@ -80,6 +82,7 @@ class SpectralFusionLayer(nn.Module):
 
     def forward(self, x):
         # x shape: (batch, nodes, time, feat)
+        x = x.permute(0, 2, 3,1).contiguous()
         batch_size = x.shape[0]
 
         # -- Step 1: 图傅里叶变换(GFT) --#
@@ -123,5 +126,6 @@ class SpectralFusionLayer(nn.Module):
         # 逆GFT (batch, modes, time, feat) -> (batch, nodes, time, feat)
         x_igft = torch.einsum('nq, bqtf -> bntf',
                               self.lap_evecs, x_ifft)
-
-        return x_igft
+        
+        y_phy = self.output(x_igft)
+        return y_phy

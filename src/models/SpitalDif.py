@@ -13,7 +13,7 @@ class SpitalDif(nn.Module):
 
         self.input_dim = input_dim
         self.seq_len = seq_len
-        self.emd_dim = config['emd_dim']
+        self.emd_dim = hidden_dim
         num_nodes = config['num_nodes']
         hidden_dims = config['hidden_channels']
         #转移矩阵
@@ -30,7 +30,7 @@ class SpitalDif(nn.Module):
             num_matric = num_matric+1
 
         #self.gcn = UnetGCN(hidden_dims,num_matric)
-        self.gcn = GraphConvLayer(self.emd_dim,self.emd_dim,num_matric)
+        self.gcn = GraphConvLayer(self.emd_dim,1,num_matric)
         self.dropout = nn.Dropout(config['dropout'])
 
         self.out_linear = nn.Linear(self.emd_dim, self.emd_dim)
@@ -95,7 +95,7 @@ class SpitalDif(nn.Module):
 
     def forward(self, X_sptial,A,Time):
         #batch,nodes,seq,feat
-        X_sptial = X_sptial.transpose(1, 2)
+        X_sptial = X_sptial.permute(0,3,2,1)
         support = []
         if self.adp_adj:
             adp = F.softmax(F.relu(torch.mm(self.nodevec1, self.nodevec2)), dim=1)
