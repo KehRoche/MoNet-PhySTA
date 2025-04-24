@@ -10,7 +10,7 @@ config1:
   tcn_layers: 3
   num_nodes: 325
   hidden_channels: [16, 32,64]
-  condition_emb: 4
+  condition_emb: 8
   #IRM
   temp_penalty: 0.1
   spital_penalty: 0.1

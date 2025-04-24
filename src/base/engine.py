@@ -179,21 +179,21 @@ class BaseEngine():
             for X, label in self._dataloader[mode + '_loader'].get_iterator():
                 # X (b, t, n, f), label (b, t, n, 1)
                 X, label = self._to_device(self._to_tensor([X, label]))
-                #if mode == 'test':
-                #nosie add
-                batch_size, time_steps, num_nodes, num_features = X.shape
-                num_replace = max(1, int(num_nodes * 0.1))  # 至少替换 1 个节点
-                assert num_replace <= num_nodes, "num_replace cannot exceed num_nodes"
-                replace_indices = torch.randperm(num_nodes, device=X.device)[:num_replace]
-                # 关键修复2：显式约束索引范围
-                replace_indices = torch.clamp(replace_indices, 0, num_nodes - 1)
-
-                # 更换为高斯噪声
-                mean = 0.0  # 高斯分布的均值
-                std_dev = 1.0  # 高斯分布的标准差
-                random_values = mean + std_dev * torch.randn((batch_size, time_steps, num_replace, 1),
-                                                             device=X.device)
-                X[:, :, replace_indices, :1] = random_values
+                # #if mode == 'test':
+                # #nosie add
+                # batch_size, time_steps, num_nodes, num_features = X.shape
+                # num_replace = max(1, int(num_nodes * 0.1))  # 至少替换 1 个节点
+                # assert num_replace <= num_nodes, "num_replace cannot exceed num_nodes"
+                # replace_indices = torch.randperm(num_nodes, device=X.device)[:num_replace]
+                # # 关键修复2：显式约束索引范围
+                # replace_indices = torch.clamp(replace_indices, 0, num_nodes - 1)
+                #
+                # # 更换为高斯噪声
+                # mean = 0.0  # 高斯分布的均值
+                # std_dev = 1.0  # 高斯分布的标准差
+                # random_values = mean + std_dev * torch.randn((batch_size, time_steps, num_replace, 1),
+                #                                              device=X.device)
+                # X[:, :, replace_indices, :1] = random_values
                 X = X.contiguous()
                 pred = self.model(X, label)
                 pred, label = self._inverse_transform([pred, label])

@@ -31,13 +31,6 @@ class MoNet(BaseModel):
         self.location = model_config['location']
         self.location = self.location.unsqueeze(0).unsqueeze(2)
         self.location = self.location.repeat(batch_size,1,seq_len,1).float()
-
-        # 计算正弦值
-        sin_wave = torch.sin(torch.linspace(0, 2 * np.pi, seq_len))
-        global_feature_init = sin_wave.unsqueeze(-1)
-        # 生成与global_feature_init相同形状的随机噪声
-        noise = torch.randn_like(global_feature_init) * 0.1  # 0.1是噪声的标准差
-        global_feature = global_feature_init + noise
         
         #tod,dow,node,location,common_feat
         num_conditon = 3
@@ -62,44 +55,35 @@ class MoNet(BaseModel):
 
         # embedding layer
         self.time_series_emb_layer = nn.Conv2d(
-            in_channels=3 * seq_len, out_channels=emd_dim*seq_len, kernel_size=(1, 1), bias=True)
+            in_channels=3 * seq_len, out_channels=emd_dim, kernel_size=(1, 1), bias=True)
 
 
-        self.global_feature = nn.Parameter(global_feature)
-        self.dyn_gate = DynmiacGate(self.input_dim,emd_dim)
-        self.period_fun = nn.Linear(emd_dim*2, emd_dim)
+
         #embedding param
         self.emb_way = model_config['emb_way']
         self.emd_dim = emd_dim
-        self.data_embedding = nn.Linear(self.input_dim, emd_dim)
-        self.tod_embedding = nn.Linear(self.input_dim, emd_dim//2)
-        self.dow_embedding = nn.Linear(self.input_dim, emd_dim//2)
-        self.loaction_embedding = nn.Linear(self.input_dim*3, condition_emb)
         self.fusion_embedding = nn.Linear(self.emd_dim*3, emd_dim)
 
         #path
         from .PhyField import SpectralFusionLayer
 
-        self.Field = SpectralFusionLayer(self.hidden_dim,self.hidden_dim,12,6,self.A)
-        #self.TempModule = TempEvo(model_config,self.input_dim,seq_len,self.hidden_dim, tcn_layers,kno_layers)
-        #self.SptialModule= SpitalDif(model_config,self.input_dim,seq_len,self.hidden_dim)
+        #self.Field = SpectralFusionLayer(self.hidden_dim,self.hidden_dim,12,6,self.A)
+        self.TempModule = TempEvo(model_config,self.input_dim,seq_len,self.hidden_dim, tcn_layers)
+        #self.SptialModule= SpitalDif(model_config,self.input_dim,seq_len,self.hidden_dim
 
         self.activation = nn.ReLU()
-
         #output_fusion
         self.output_fusion = nn.Sequential(
             nn.Linear(self.input_dim*3, self.input_dim))
             # ,
             # self.activation,
             # nn.Linear(emd_dim//2, 1))
-        # self.router_weight = nn.Parameter(torch.zeros(1, 1,seq_len,emd_dim), requires_grad=True)
-        # self.out_fc_1   = nn.Linear(emd_dim, emd_dim//2)
-        # self.out_fc_2   = nn.Linear(emd_dim//2, self.input_dim)
+
 
     def STIDemd(self,input):
 
-        time_in_day_emb = self.time_in_day_emb[(input[:, :, :,self.input_dim] * 288).type(torch.LongTensor)]
-        day_in_week_emb = self.day_in_week_emb[(input[:, :, :,self.input_dim+1] * 7).type(torch.LongTensor)]
+        time_in_day_emb = self.time_in_day_emb[(input[:, -1:, :,self.input_dim] * 288).type(torch.LongTensor)]
+        day_in_week_emb = self.day_in_week_emb[(input[:, -1:, :,self.input_dim+1] * 7).type(torch.LongTensor)]
 
         #xyz = self.loaction_embedding(location)
         # time series embedding
@@ -118,7 +102,7 @@ class MoNet(BaseModel):
         node_emb = []
         # expand node embeddings
         node_emb.append(self.node_emb.unsqueeze(0).expand(
-            batch_size, -1, -1).transpose(1, 2).unsqueeze(-1).repeat(1, 1, 1,seq_len))
+            batch_size, -1, -1).transpose(1, 2).unsqueeze(-1).repeat(1, 1, 1,1))
 
         # temporal embeddings
         tem_emb = []
@@ -129,7 +113,7 @@ class MoNet(BaseModel):
         hidden = torch.cat([time_series_emb] + node_emb + tem_emb, dim=1)
         #b,emd*4,nodes,feat,
         #b,feat,nodes,seq_len
-        return hidden.view(batch_size, seq_len*self.hidden_dim,num_nodes,-1),hidden
+        return hidden.view(batch_size, self.hidden_dim,num_nodes,-1),hidden
     def embedding(self,input,time,location,laplacian,embway="SOP"):
         tod = self.tod_embedding(time[:,:,:,:1])
         dow = self.dow_embedding(time[:, :, :, 1:])
@@ -163,21 +147,21 @@ class MoNet(BaseModel):
         #X = self.embedding(X,time,self.location,self.L,self.emb_way)
         #b,feat,nodes,len
         mix_X,X = self.STIDemd(input)
-        X_phy = self.Field(X)
+        #X_phy = self.Field(X)
         #todo : 编码后x的输入为b,64,325,1有问题
-        #X_inevo = self.TempModule(mix_X,time).transpose(1, 2)
+        X_inevo = self.TempModule(mix_X,time)
         #_exdif = self.SptialModule(X,self.A,time)
         #,X_exdif，X_inevo,X_phy
         # y_hat = self.output_fusion(torch.cat((X_inevo,X_phy,X_exdif),dim=-1))
         #+ X_inevo + X_exdif
-        y_hat = X_phy
+        #y_hat = X_phy
         #y_hat = self.output_fusion(X_inevo)
 
 
         # forecast    = self.out_fc_2(F.relu(self.out_fc_1(F.relu(forecast_hidden))))
         # forecast    = forecast.transpose(1,2).contiguous().view(forecast.shape[0], forecast.shape[2], -1)
-        return  y_hat.transpose_(1, 2)
-        #return X_inevo
+        #return  y_hat.transpose_(1, 2)
+        return X_inevo
 
 
 

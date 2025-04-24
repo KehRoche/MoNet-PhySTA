@@ -8,7 +8,7 @@ from .UniMoudle import *
 
 
 class TempEvo(nn.Module):
-    def __init__(self,config,input_dim,seq_len,hidden_dim,kno_layers,tcn_layers):
+    def __init__(self,config,input_dim,seq_len,hidden_dim,tcn_layers):
         super().__init__()
         self.input_dim = input_dim
         self.seq_len = seq_len
@@ -16,13 +16,12 @@ class TempEvo(nn.Module):
         n_heads = config['n_heads']
         self.dropout = config['dropout']
         self.device= config['device']
-        self.emd_dim = hidden_dim*seq_len
+        self.emd_dim = hidden_dim
         self.hidden_channels = config['hidden_channels']
         side_channels = [config['covariate_dim']]+ self.hidden_channels
         self.hidden_channels = [self.emd_dim] +  self.hidden_channels
 
         #KNO parm
-        self.kno_layers = kno_layers
         self.tcn_layers = tcn_layers
 
         # self.feature_embedding = Conv1d(input_dim, self.emd_dim, 1, actv=False)
