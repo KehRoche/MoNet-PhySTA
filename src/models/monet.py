@@ -3,8 +3,8 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from src.base.model import BaseModel
-from .TempEvo import TempEvo
-from .SpitalDif import SpitalDif
+from .PhyField import SpecGraphFreqNet
+from .SpitalDif import MSKGN
 from .UniMoudle import *
 
 
@@ -15,7 +15,7 @@ class MoNet(BaseModel):
         self.input_dim = output_dim
 
         self.A = model_config['adj']
-        self.L = compute_laplacian(self.A)
+        self.eigvecs,self.eigval = compute_laplacian(self.A)
         self.num_nodes = model_config['num_nodes']
 
         batch_size = model_config['bs']
@@ -26,13 +26,20 @@ class MoNet(BaseModel):
         tcn_layers = model_config['tcn_layers']
         kno_layers = model_config['kno_layers']
 
-        #model_config['covariate_dim']
 
         self.location = model_config['location']
         self.location = self.location.unsqueeze(0).unsqueeze(2)
         self.location = self.location.repeat(batch_size,1,seq_len,1).float()
         
         #tod,dow,node,location,common_feat
+        #embedding param
+        self.emd_dim = emd_dim
+        self.data_embedding = nn.Linear(self.input_dim, emd_dim)
+        self.tod_embedding = nn.Linear(self.input_dim, emd_dim//2)
+        self.dow_embedding = nn.Linear(self.input_dim, emd_dim//2)
+        self.loaction_embedding = nn.Linear(self.input_dim*3, emd_dim)
+        self.fusion_embedding = nn.Linear(self.emd_dim*3, emd_dim)
+
         num_conditon = 3
         condition_emb = model_config['condition_emb']
         self.hidden_dim = condition_emb*num_conditon+emd_dim
@@ -62,22 +69,26 @@ class MoNet(BaseModel):
         #embedding param
         self.emb_way = model_config['emb_way']
         self.emd_dim = emd_dim
-        self.fusion_embedding = nn.Linear(self.emd_dim*3, emd_dim)
+        self.fusion_embedding = nn.Linear(self.emd_dim*2, emd_dim)
 
         #path
-        from .PhyField import SpectralFusionLayer
-
-        #self.Field = SpectralFusionLayer(self.hidden_dim,self.hidden_dim,12,6,self.A)
-        self.TempModule = TempEvo(model_config,self.input_dim,seq_len,self.hidden_dim, tcn_layers)
-        #self.SptialModule= SpitalDif(model_config,self.input_dim,seq_len,self.hidden_dim
+        msgraph_layers = 1
+        self.Field = SpecGraphFreqNet(emd_dim,emd_dim)
+        self.SptialModule = MSKGN(self.hidden_dim, msgraph_layers,self.A,kernel_nn_hidden=8)
 
         self.activation = nn.ReLU()
         #output_fusion
         self.output_fusion = nn.Sequential(
-            nn.Linear(self.input_dim*3, self.input_dim))
-            # ,
-            # self.activation,
-            # nn.Linear(emd_dim//2, 1))
+            nn.Linear(self.emd_dim+self.hidden_dim, self.emd_dim),
+            self.activation,
+            nn.Dropout(p=0.15),
+            nn.Linear(self.emd_dim, 1))
+        self.res_layer = nn.Conv2d(
+            in_channels=self.hidden_dim, out_channels=seq_len, kernel_size=(1, 1), bias=True)
+        # self.regression_layer = nn.Conv2d(
+        #     in_channels=self.hidden_dim, out_channels=seq_len, kernel_size=(1, 1), bias=True)
+        self.res_layer = MultiLayerPerceptron(self.hidden_dim, seq_len)
+
 
 
     def STIDemd(self,input):
@@ -114,11 +125,11 @@ class MoNet(BaseModel):
         #b,emd*4,nodes,feat,
         #b,feat,nodes,seq_len
         return hidden.view(batch_size, self.hidden_dim,num_nodes,-1),hidden
-    def embedding(self,input,time,location,laplacian,embway="SOP"):
+    def embedding(self,input,time,location,embway="SOP"):
         tod = self.tod_embedding(time[:,:,:,:1])
         dow = self.dow_embedding(time[:, :, :, 1:])
-        xyz = self.loaction_embedding(location)
-        condition_info = self.activation(torch.concat((tod, dow, xyz), dim=-1))
+        #xyz = self.loaction_embedding(location)
+        condition_info = self.activation(torch.concat((tod, dow), dim=-1))
         input = self.data_embedding(input)
         input = self.fusion_embedding(torch.cat((input,condition_info), dim=-1))
         #emb_fea = self.dyn_gate(input,condition_info)
@@ -144,24 +155,20 @@ class MoNet(BaseModel):
         #batch,len,nodes,feat
         X = input[:,:,:,:self.input_dim]
         time = input[:,:,:,self.input_dim:]
-        #X = self.embedding(X,time,self.location,self.L,self.emb_way)
-        #b,feat,nodes,len
-        mix_X,X = self.STIDemd(input)
-        #X_phy = self.Field(X)
-        #todo : 编码后x的输入为b,64,325,1有问题
-        X_inevo = self.TempModule(mix_X,time)
-        #_exdif = self.SptialModule(X,self.A,time)
-        #,X_exdif，X_inevo,X_phy
-        # y_hat = self.output_fusion(torch.cat((X_inevo,X_phy,X_exdif),dim=-1))
-        #+ X_inevo + X_exdif
-        #y_hat = X_phy
-        #y_hat = self.output_fusion(X_inevo)
+        X = self.embedding(X,time,self.location,self.emb_way)
+        #b,feat,nodes,len x_phy:b,n,l,f
+        X_phy = self.Field(X.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
+        mix_X,_ = self.STIDemd(input)
+        x_res = self.res_layer(mix_X)
+        X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,self.seq_len).transpose(1,3)
+        y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
+
 
 
         # forecast    = self.out_fc_2(F.relu(self.out_fc_1(F.relu(forecast_hidden))))
         # forecast    = forecast.transpose(1,2).contiguous().view(forecast.shape[0], forecast.shape[2], -1)
         #return  y_hat.transpose_(1, 2)
-        return X_inevo
+        return y_hat
 
 
 

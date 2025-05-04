@@ -4,40 +4,102 @@ import torch.nn as nn
 from sympy.abc import alpha
 
 
-def build_directed_laplacian(A):
-    out_degree = torch.sum(A, dim=1)          # 出度矩阵对角线元素
-    D_out = torch.diag(out_degree)            # 出度对角矩阵
-    L = D_out - A                             # 出度拉普拉斯矩阵
-    return L
+class SpectralFilter(nn.Module):
+    def __init__(self, F_in, F_out):
+        super().__init__()
+        self.F_in  = F_in
+        self.F_out = F_out
+        # 分别为实部和虚部设计独立的线性层
+        self.linear_real = nn.Linear(F_in, F_out, bias=False)
+        self.linear_imag = nn.Linear(F_in, F_out, bias=False)
+
+    def forward(self, x_spec_segment):
+        """
+        Args:
+          x_spec_segment: complex tensor of shape [B, M, T, F_in]
+        Returns:
+          complex tensor of shape [B, M, T, F_out]
+        """
+        # 拆分实部和虚部
+        real = x_spec_segment.real      # [B, M, T, F_in]
+        imag = x_spec_segment.imag      # [B, M, T, F_in]
+
+        B, M, T, _ = real.shape
+
+        # 合并前 3 维以便用线性层批量映射
+        real_flat = real.reshape(-1, self.F_in)   # [(B*M*T), F_in]
+        imag_flat = imag.reshape(-1, self.F_in)   # [(B*M*T), F_in]
+
+        # 分别映射
+        real_out = self.linear_real(real_flat)    # [(B*M*T), F_out]
+        imag_out = self.linear_imag(imag_flat)    # [(B*M*T), F_out]
+
+        # 恢复形状
+        real_out = real_out.view(B, M, T, self.F_out)
+        imag_out = imag_out.view(B, M, T, self.F_out)
+
+        # 重新组装成复数张量并返回
+        return torch.complex(real_out, imag_out)
 
 
-def directed_gft(L, x):
-    U, S, V = torch.svd(L)
-    x_hat_fwd = torch.matmul(U.T, x)        # 正向频域投影
-    x_hat_bwd = torch.matmul(V.T, x)       # 逆向频域投影
-    return x_hat_fwd, x_hat_bwd
+class SpecGraphFreqNet(nn.Module):
+    def __init__(self,
+                 in_channels, out_channels, energy_splits=(0.8,0.95)):
+        super().__init__()
+        self.F_in = in_channels
+        self.F_out = out_channels
+        self.low_cut, self.mid_cut = energy_splits
 
-def inverse_directed_gft(U, V, x_hat_fwd, x_hat_bwd):
-    x_recon_fwd = torch.matmul(U, x_hat_fwd)
-    x_recon_bwd = torch.matmul(V, x_hat_bwd)
-    return x_recon_fwd, x_recon_bwd
+        # 四段 SpectralFilter，但内部全共享 FNO 风格线性层
+        self.filter_high = SpectralFilter(in_channels, out_channels)
+        self.filter_mid  = SpectralFilter(in_channels, out_channels)
+        self.filter_low  = SpectralFilter(in_channels, out_channels)
+        self.filter_neg  = SpectralFilter(in_channels, out_channels)
 
-def calu_A_dir(adj_matrix):
-    # 计算方向差异矩阵
-    diff_matrix = adj_matrix - adj_matrix.T
+        self.proj   = nn.Linear(out_channels, out_channels)
 
-    # 定义显著性阈值（基于差异的绝对值）
-    threshold = torch.quantile(diff_matrix[diff_matrix != 0].abs(), 0.25)  # 取差异绝对值的第75百分位数
+    def forward(self, x, eigvecs, lambdas):
+        B, N, T, F = x.shape
+        device = x.device
+        K = eigvecs.size(1)
 
-    # 生成二进制方向矩阵（1表示i→j方向显著）
-    dir_mask = (diff_matrix > threshold).float()
+        # 1. GFT & FFT 如前...
+        x_gft = torch.einsum('bntf, nk -> bktf', x.to(dtype=torch.complex64), eigvecs.conj())       # [B, K, T, F]
+        x_spec = torch.fft.fft(x_gft, dim=2)                       # [B, K, T, F]
 
-    # 根据原生权重增强方向矩阵（例如，仅保留高权重的方向）
-    weight_threshold = torch.median(adj_matrix[adj_matrix != 0]) / 4
-    enhanced_dir_matrix = dir_mask * (adj_matrix > weight_threshold).float()
+        # 2. 能量分段索引
+        energy = (x_spec.abs()**2).sum(dim=(0,2,3))       # [K]
+        neg_mask = lambdas < 0
+        pos_idxs = (~neg_mask).nonzero().squeeze()
+        pos_sorted = pos_idxs[energy[pos_idxs].argsort(descending=True)]
+        k_pos = pos_sorted.numel()
+        cut1, cut2 = int(self.low_cut*k_pos), int(self.mid_cut*k_pos)
+        high_idx = pos_sorted[:cut1]
+        mid_idx  = pos_sorted[cut1:cut2]
+        low_idx  = pos_sorted[cut2:]
+        neg_idx  = neg_mask.nonzero().squeeze()
 
-    return enhanced_dir_matrix
+        # 3. 分段提取子张量并应用对应滤波器
+        y_spec = torch.zeros_like(x_spec)
+        if len(high_idx)>0:
+            seg = x_spec[:, high_idx]            # [B, M_high, T, F]
+            y_spec[:, high_idx] = self.filter_high(seg)
+        if len(mid_idx)>0:
+            seg = x_spec[:, mid_idx]
+            y_spec[:, mid_idx]  = self.filter_mid(seg)
+        if len(low_idx)>0:
+            seg = x_spec[:, low_idx]
+            y_spec[:, low_idx]  = self.filter_low(seg)
+        if len(neg_idx)>0:
+            seg = x_spec[:, neg_idx]
+            y_spec[:, neg_idx]  = self.filter_neg(seg)
 
+        # 4. 逆 FFT & 逆 GFT 如前...
+        y_ifft = torch.fft.ifft(y_spec, dim=2)
+        y_rec  = torch.einsum('bktf, nk -> bntf', y_ifft, eigvecs)
+
+        # 5. 输出投影
+        return self.proj(y_rec.real)
 
 class SpectralFusionLayer(nn.Module):
     def __init__(self, in_feat, out_feat, graph_modes, time_modes,A):
@@ -80,7 +142,7 @@ class SpectralFusionLayer(nn.Module):
                + torch.einsum('bintf, ionth->bontf', x_ft.imag, weights[..., 1:])
         return torch.view_as_complex(torch.stack([real, imag], dim=-1))
 
-    def forward(self, x):
+    def forward(self, x,eigvecs):
         # x shape: (batch, nodes, time, feat)
         x = x.permute(0, 2, 3,1).contiguous()
         batch_size = x.shape[0]

@@ -231,6 +231,6 @@ def main():
     else:
         loss = engine.evaluate(config['mode'])
 if __name__ == "__main__":
-    #main()
-    study = optuna.create_study(direction="minimize")
-    study.optimize(objective, n_trials=50)
+    main()
+    # study = optuna.create_study(direction="minimize")
+    # study.optimize(objective, n_trials=50)

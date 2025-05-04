@@ -119,7 +119,7 @@ class BaseEngine():
         return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
 
 
-    def train(self,swanlab_run):
+    def train(self,swanlab_run=None):
         #self._logger.info('Start training!')
 
         wait = 0
@@ -154,21 +154,23 @@ class BaseEngine():
                 if wait == self._patience:
                     self._logger.info('Early stop at epoch {}, loss = {:.6f}'.format(epoch + 1, min_loss))
                     break
-            train_info = {"train_time":(t2-t1),
-                          "train_loss": mtrain_loss,
-                          "train_mape": mtrain_mape,
-                          "train_rmse": mtrain_rmse,
-                          "valid_time":(v2-v1),
-                          "valid_loss": mvalid_loss,
-                          "valid_mape": mvalid_mape,
-                          "valid_rmse": mvalid_rmse,
-            }
-            swanlab_run.log(train_info)
+
+            if swanlab_run is not None:
+                train_info = {"train_time":(t2-t1),
+                              "train_loss": mtrain_loss,
+                              "train_mape": mtrain_mape,
+                              "train_rmse": mtrain_rmse,
+                              "valid_time":(v2-v1),
+                              "valid_loss": mvalid_loss,
+                              "valid_mape": mvalid_mape,
+                              "valid_rmse": mvalid_rmse,
+                }
+                swanlab_run.log(train_info)
         loss = self.evaluate('test',swanlab_run)
         return loss
 
 
-    def evaluate(self, mode,swanlab_run):
+    def evaluate(self, mode,swanlab_run=None):
         if mode == 'test':
             self.load_model(self._save_path)
         self.model.eval()
@@ -228,10 +230,11 @@ class BaseEngine():
             for i in range(self.model.horizon):
                 res = compute_all_metrics(preds[:,i,:], labels[:,i,:], mask_value)
                 log = 'Horizon {:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}'
-                self._logger.info(log.format(i + 1, res[0], res[2], res[1]))
-                swanlab_run.log({"test_mae":res[0]})
-                swanlab_run.log({"test_mape":res[1]})
-                swanlab_run.log({"test_rmse":res[2]})
+                if swanlab_run is not None:
+                    self._logger.info(log.format(i + 1, res[0], res[2], res[1]))
+                    swanlab_run.log({"test_mae":res[0]})
+                    swanlab_run.log({"test_mape":res[1]})
+                    swanlab_run.log({"test_rmse":res[2]})
                 test_mae.append(res[0])
                 test_mape.append(res[1])
                 test_rmse.append(res[2])
