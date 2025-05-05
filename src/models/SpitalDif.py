@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from tslearn.metrics import cdist_dtw
+from collections import defaultdict
 from .UniMoudle import *
 from .TempEvo import SubSeqForcast
 
@@ -250,7 +250,7 @@ class MSKGN(nn.Module):
                 nn.Linear(kernel_nn_hidden, hidden_channels*hidden_channels)
             )
             self.conv_up.append(BatchedSparseNNConv(hidden_channels, hidden_channels, mlp_up, aggr='mean'))
-        self.mg = self.multiscale_graph(adj_matrix.squeeze(-1))
+        self.center,self.part,self.mg = self.multiscale_graph(adj_matrix.squeeze(-1))
         # 输入与输出投影
         self.fc_in  = nn.Linear(1, hidden_channels)
         self.fc_out = nn.Linear(hidden_channels, 1)
@@ -289,30 +289,31 @@ class MSKGN(nn.Module):
                 G[u][v]['weight'] = float(A[u,v])
             part = community_louvain.best_partition(G, weight='weight')
             # 社区中心
-            comms = {}
-            for n,c in part.items(): comms.setdefault(c,[]).append(n)
-            centers = [max(mem, key=lambda i:G.degree(i,weight='weight')) for mem in comms.values()]
-            centers = torch.tensor(centers, device=device, dtype=torch.long)
-            clusters.append(centers)
+            # 社区 -> 成员节点映射
+            comms = defaultdict(list)
+            for node, comm in part.items():
+                comms[comm].append(node)
 
+            # 社区编号列表
+            # 找到每个社区的“中心节点” = 权重度最大节点
+            centers = {comm: max(nodes, key=lambda i: G.degree(i, weight='weight'))
+                       for comm, nodes in comms.items()}
+
+            # 建立原始节点 -> 所属中心映射
+            node2center = {node: centers[comm] for comm, nodes in comms.items() for node in nodes}
+
+            # Step 3: 初始化粗化图（保持原始图维度）
             A_coarse = torch.zeros_like(A)
-            # 取子矩阵 A_cc = A[centers][:, centers]
-            A_cc = A[centers][:, centers]
-            # 将其写回 A_coarse 对应位置
-            for i, u in enumerate(centers):
-                for j, v in enumerate(centers):
-                    A_coarse[u, v] = A_cc[i, j]
+            # Step 4: 汇聚边权到对应中心节点之间
+            for u in range(A.shape[0]):
+                for v in range(A.shape[1]):
+                    cu = node2center[u]
+                    cv = node2center[v]
+                    if cu == cv:
+                        continue  # （可选）不考虑内部自连接
+                    A_coarse[cu, cv] += A[u, v]
             # （可选）去除自环
-            A_coarse.fill_diagonal_(0)
-
-            # 3) 同样做 Top-k 稀疏化（如果需要）
-            for u in centers:
-                row = A_coarse[u]
-                if (row > 0).sum() > self.topk:
-                    topk_idx = torch.topk(row, self.topk).indices
-                    mask = torch.zeros_like(row)
-                    mask[topk_idx] = 1
-                    A_coarse[u] *= mask
+            #A_coarse.fill_diagonal_(0)
 
             # # Nyström 近似构建粗图
             # Xc = X_feat[centers]
@@ -343,7 +344,7 @@ class MSKGN(nn.Module):
             # X_feat = X_feat[centers]
             # curr_idx = centers
 
-        return {
+        return centers,part,{
             'clusters':  clusters,
             'edge_down': edge_down,
             'edge_mid':  edge_mid,
@@ -357,14 +358,14 @@ class MSKGN(nn.Module):
         """
         device = x.device
         x = x.squeeze(-1).transpose(-1, -2)
-        B, N, _ = x.size()
+        B, N, dim = x.size()
         # 投影到 hidden
         #x = self.fc_in(x)
 
         # 多尺度图预处理
         mg = self.mg
         # clusters, edge_down/mid/up 各为-length lists
-
+        features = {'input': x.clone()}
         # V-Cycle 消息传递
         for t in range(1):  # 如果需要多次迭代，可改为 range(depth)
             # DOWNWARD: l=0..L-2
@@ -374,23 +375,41 @@ class MSKGN(nn.Module):
                 # 聚合到粗层节点 order 与 clusters[l+1] 对齐
                 msg = self.conv_down[l](x_l, ei, ew)  # [B, n_{l+1}, F]
                 # 将 msg 对应位置取出
-                x = msg
-
+                for node, comm in self.part.items():
+                    center = self.center[comm]  # 找到当前节点所属社区的中心节点
+                    x_l[:,node,:] = msg[:,center,:]  # 将中心节点特征映射给该节点
+                features[f'down_l{l}'] = x_l.clone()
             # UPWARD: l=L-1..0
-            for l in reversed(range(self.levels)):
+            for l in range(self.levels):
                 # 同层 mid
                 ei_m, ew_m = mg['edge_mid'][l]
-                x = x + self.conv_mid[l](x, ei_m, ew_m)
-                x = F.relu(x)
+                x_m = x + self.conv_mid[l](x, ei_m, ew_m)
+                #x_m = F.relu(x_m)
+                features[f'mid_l{l}'] = x_m.clone()
+
                 # up-scale
                 ei_u, ew_u = mg['edge_up'][l]
-                msg_up = self.conv_up[l](x, ei_u, ew_u)
-                # map back to finer ordering via clusters[l]
-                idx = mg['clusters'][l]
-                x_fine = torch.zeros(B, idx.size(0), x.size(-1), device=x.device)
-                x_fine[:, idx, :] = msg_up
-                x = x_fine
+                msg_up = x+self.conv_up[l](x, ei_u, ew_u)
+                msg_up = F.relu(msg_up)
+                features[f'up_l{l}'] = msg_up.clone()
+        # Select a batch and node to visualize
+        batch_idx = 0
+        first_ei = mg['edge_down'][l][0]
+        # pick first source node
+        node_idx = int(first_ei[0,0].item())
+        import matplotlib.pyplot as plt
+        # Plot feature values across stages
+        stages = list(features.keys())
+        plt.figure(figsize=(15,5))
+        for stage in stages:
+            feat_vec = features[stage][batch_idx, node_idx, :].detach().cpu().numpy()
+            plt.plot(range(dim), feat_vec, label=stage)
 
+        plt.title(f'Feature Evolution for B={batch_idx}, Node={node_idx}')
+        plt.xlabel('Feature Dimension')
+        plt.ylabel('Feature Value')
+        plt.legend()
+        plt.show()
         # 最终投影回一维输出
         return x.unsqueeze(-1).transpose(1, 2)
 

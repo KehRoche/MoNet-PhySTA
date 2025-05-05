@@ -79,7 +79,7 @@ class MoNet(BaseModel):
         self.activation = nn.ReLU()
         #output_fusion
         self.output_fusion = nn.Sequential(
-            nn.Linear(self.emd_dim+self.hidden_dim, self.emd_dim),
+            nn.Linear(self.hidden_dim, self.emd_dim),
             self.activation,
             nn.Dropout(p=0.15),
             nn.Linear(self.emd_dim, 1))
@@ -157,11 +157,14 @@ class MoNet(BaseModel):
         time = input[:,:,:,self.input_dim:]
         X = self.embedding(X,time,self.location,self.emb_way)
         #b,feat,nodes,len x_phy:b,n,l,f
-        X_phy = self.Field(X.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
+        #X_phy = self.Field(X.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
         mix_X,_ = self.STIDemd(input)
-        x_res = self.res_layer(mix_X)
+        #x_res = self.res_layer(mix_X)
         X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,self.seq_len).transpose(1,3)
-        y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
+        #y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
+        y_hat = self.output_fusion(X_exdif)
+
+
 
 
 
