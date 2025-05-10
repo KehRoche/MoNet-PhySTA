@@ -147,7 +147,7 @@ def generate_train_val_test(args):
     out_dir = 'data/'+args.dataset + '/' + args.years
     if not os.path.exists(out_dir):
         os.makedirs(out_dir)
-    np.savez_compressed(os.path.join(out_dir, 'minmax_his.npz'), data=data, mean=scaler.min, std=scaler.max)
+    np.savez_compressed(os.path.join(out_dir, 'his.npz'), data=data, mean=scaler.min, std=scaler.max)
 
     # np.save(os.path.join(out_dir, 'idx_train'), idx_train)
     # np.save(os.path.join(out_dir, 'idx_val'), idx_val)

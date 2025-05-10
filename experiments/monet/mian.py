@@ -182,16 +182,13 @@ def main():
     else:
         A = load_adj_from_numpy(adj_path)
     config['adj'] = torch.tensor(A).to(device).float()
-    location_path = data_path + '/location.npy'
-    location = np.load(location_path)
-    config['location'] = torch.tensor(location).to(device)
+    # location_path = data_path + '/location.npy'
+    # location = np.load(location_path)
+    # config['location'] = torch.tensor(location).to(device)
     dataloader, scaler = load_dataset(data_path, config, logger)
 
     cl_step = config['cl_epoch'] * dataloader['train_loader'].num_batch
     warm_step = config['warm_epoch'] * dataloader['train_loader'].num_batch
-
-
-
 
     model = MoNet(input_dim=config['input_dim'],
                   output_dim=config['output_dim'],

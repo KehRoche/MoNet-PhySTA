@@ -62,9 +62,13 @@ class SpecGraphFreqNet(nn.Module):
         B, N, T, F = x.shape
         device = x.device
         K = eigvecs.size(1)
-
+        # 执行 GFT
         # 1. GFT & FFT 如前...
-        x_gft = torch.einsum('bntf, nk -> bktf', x.to(dtype=torch.complex64), eigvecs.conj())       # [B, K, T, F]
+        if torch.is_complex(eigvecs):
+            x_gft = torch.einsum('bntf, nk -> bktf', x.to(dtype=torch.complex64), eigvecs.conj())  # [B, K, T, F]
+        else:
+            x_gft = torch.einsum('bntf, nk -> bktf', x, eigvecs)  # [B, K, T, F]
+
         x_spec = torch.fft.fft(x_gft, dim=2)                       # [B, K, T, F]
 
         # 2. 能量分段索引
@@ -90,12 +94,14 @@ class SpecGraphFreqNet(nn.Module):
         if len(low_idx)>0:
             seg = x_spec[:, low_idx]
             y_spec[:, low_idx]  = self.filter_low(seg)
-        if len(neg_idx)>0:
+        if torch.is_complex(eigvecs) and len(neg_idx)>0:
             seg = x_spec[:, neg_idx]
             y_spec[:, neg_idx]  = self.filter_neg(seg)
 
         # 4. 逆 FFT & 逆 GFT 如前...
         y_ifft = torch.fft.ifft(y_spec, dim=2)
+        if not torch.is_complex(eigvecs):
+            y_ifft = y_ifft.real
         y_rec  = torch.einsum('bktf, nk -> bntf', y_ifft, eigvecs)
 
         # 5. 输出投影

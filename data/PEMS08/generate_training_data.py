@@ -77,7 +77,7 @@ def generate_graph_seq2seq_io_data(
         # numerical day_in_week
         day_in_week = [(i // 288)%7 for i in range(num_samples)]
         day_in_week = np.array(day_in_week)
-        day_in_week = np.tile(day_in_week, [1, num_nodes, 1]).transpose((2, 1, 0))
+        day_in_week = np.tile(day_in_week, [1, num_nodes, 1]).transpose((2, 1, 0))/7
         feature_list.append(day_in_week)
 
     data = np.concatenate(feature_list, axis=-1)
@@ -158,8 +158,8 @@ def generate_train_val_test(args):
             y_offsets=y_offsets.reshape(list(y_offsets.shape) + [1]),
         )
 
-    pickle.dump(_max, open("datasets/PEMS08/max.pkl", 'wb'))
-    pickle.dump(_min, open("datasets/PEMS08/min.pkl", 'wb'))
+    pickle.dump(_max, open("data/PEMS08/max.pkl", 'wb'))
+    pickle.dump(_min, open("data/PEMS08/min.pkl", 'wb'))
 
 
 if __name__ == "__main__":
@@ -168,8 +168,8 @@ if __name__ == "__main__":
     y_start         = 1
     dow             = True # 是否添加day of week(按比例算)特征
     dataset        = "PEMS08"    # PEMS or METR
-    output_dir  = 'datasets/PEMS08'
-    traffic_df_filename = 'datasets/raw_data/PEMS08/PEMS08.npz'
+    output_dir  = 'data/PEMS08'
+    traffic_df_filename = 'data/PEMS08/PEMS08.npz'
     
     parser  = argparse.ArgumentParser()
     parser.add_argument("--output_dir", type=str, default=output_dir, help="Output directory.")

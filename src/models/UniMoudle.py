@@ -250,46 +250,70 @@ class Conv1d(nn.Module):
 
 
 def compute_laplacian(adj_matrix):
+    """
+    自适应计算拉普拉斯矩阵：无向图使用普通拉普拉斯，有向图使用磁性拉普拉斯
+    :param adj_matrix: 邻接矩阵 (Tensor)
+    :return: 特征向量和特征值
+    """
+    # 判断是否为无向图（邻接矩阵对称）
+    is_undirected = torch.allclose(adj_matrix, adj_matrix.T, atol=1e-6)
+
+    if is_undirected:
+        return _compute_undirected_laplacian(adj_matrix)
+    else:
+        return _compute_directed_laplacian(adj_matrix)
+
+def _compute_undirected_laplacian(adj_matrix):
+    """
+    计算无向图的普通拉普拉斯矩阵 L = D - A
+    """
+    # 计算度矩阵 D
+    degrees = torch.sum(adj_matrix, dim=1)
+    D = torch.diag_embed(degrees)
+
+    # 拉普拉斯矩阵
+    L = D - adj_matrix
+
+    # 特征分解
+    eigvals, eigvecs = torch.linalg.eigh(L)
+    eigvecs = eigvecs / eigvecs.norm(dim=0, keepdim=True)  # 归一化
+    return eigvecs, eigvals
+
+def _compute_directed_laplacian(adj_matrix):
+    """
+    计算有向图的磁性拉普拉斯矩阵（保留原逻辑）
+    """
     diff_matrix = adj_matrix - adj_matrix.T
 
     # 定义显著性阈值（基于差异的绝对值）
-    threshold = torch.quantile(diff_matrix[diff_matrix != 0].abs(), 0.5)  # 取差异绝对值的第75百分位数
+    threshold = torch.quantile(diff_matrix[diff_matrix != 0].abs(), 0.5)
 
-    # 生成二进制方向矩阵（1表示i→j方向显著）
+    # 生成二进制方向矩阵
     dir_diff_matrix = torch.where(diff_matrix > threshold, diff_matrix, torch.zeros_like(diff_matrix))
 
-    # 根据原始权重增强方向差异矩阵（例如，仅保留高权重的方向）
+    # 根据原始权重增强方向差异矩阵
     weight_threshold = torch.median(adj_matrix[adj_matrix != 0])
     weight_mask = (adj_matrix > weight_threshold).float()
     A_dir = dir_diff_matrix * weight_mask
 
-    # 1. 构造带相位的复数邻接矩阵
-    q = 0.25  # 相位参数，可调整
-    # 方向相位：有向边赋值 exp(i*2π*q)，反向或无边赋值 1
-    theta = torch.tensor(q * (2 * math.pi))  # 实数张量
+    # 构造带相位的复数邻接矩阵
+    q = 0.25  # 相位参数
+    theta = torch.tensor(q * (2 * math.pi))
+    phase = torch.complex(torch.cos(theta), torch.sin(theta))
 
-    # 分别计算实部与虚部
-    real = torch.cos(theta)  # :contentReference[oaicite:5]{index=5}
-    imag = torch.sin(theta)  # :contentReference[oaicite:6]{index=6}
-
-    # 合成 complex 张量
-    phase = torch.complex(real, imag)  # 直接得到 e^{iθ}
-
-    A_complex = adj_matrix * (1 + 0j)  # 转为复数
+    A_complex = adj_matrix * (1 + 0j)
     A_complex[A_dir > 0] *= phase
 
-    # 2. 计算磁性度矩阵
+    # 计算磁性度矩阵
     D_complex = torch.diag_embed(torch.sum(A_complex, dim=1))
 
-    # 3. 构造磁性拉普拉斯（Hermitian）
-    #    L_mag = D - (A_complex + A_complex.H)/2
+    # 构造磁性拉普拉斯矩阵
     L_mag = D_complex - 0.5 * (A_complex + A_complex.conj().transpose(-2, -1))
 
-    # 4. 特征分解：直接对复数 Hermitian 矩阵做 eigh
+    # 特征分解
     eigvals, eigvecs = torch.linalg.eigh(L_mag)
-    # 归一化保证单位正交
-    eigvecs = eigvecs / eigvecs.norm(dim=0, keepdim=True)
-    return eigvecs,eigvals
+    eigvecs = eigvecs / eigvecs.norm(dim=0, keepdim=True)  # 归一化
+    return eigvecs, eigvals
 
 class MultiLayerPerceptron(nn.Module):
     """Multi-Layer Perceptron with residual links."""

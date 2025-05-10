@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
 from collections import defaultdict
+
+from sympy import false
+
 from .UniMoudle import *
 from .TempEvo import SubSeqForcast
 
@@ -220,7 +223,7 @@ class MSKGN(nn.Module):
         self.levels = levels
         self.topk = topk
         self.gamma = gamma
-
+        self.vis = false
         # down / mid / up 三组卷积列表
         self.conv_down = nn.ModuleList()
         self.conv_mid  = nn.ModuleList()
@@ -251,6 +254,10 @@ class MSKGN(nn.Module):
             )
             self.conv_up.append(BatchedSparseNNConv(hidden_channels, hidden_channels, mlp_up, aggr='mean'))
         self.center,self.part,self.mg = self.multiscale_graph(adj_matrix.squeeze(-1))
+        self.projs = nn.ModuleList([
+            nn.Linear( 3 * hidden_channels, hidden_channels),
+            nn.ReLU()]
+            )
         # 输入与输出投影
         self.fc_in  = nn.Linear(1, hidden_channels)
         self.fc_out = nn.Linear(hidden_channels, 1)
@@ -268,11 +275,6 @@ class MSKGN(nn.Module):
         """
         device = A.device
         N = A.size(0)
-        # RBF 核
-        def rbf(K1, K2):
-            d2 = ((K1.unsqueeze(1)-K2.unsqueeze(0))**2).sum(dim=2)
-            return torch.exp(-self.gamma * d2)
-
         # 初始图
         clusters = []
         edge_down, edge_mid, edge_up = [], [], []
@@ -301,6 +303,10 @@ class MSKGN(nn.Module):
 
             # 建立原始节点 -> 所属中心映射
             node2center = {node: centers[comm] for comm, nodes in comms.items() for node in nodes}
+            # 2. 构建中心节点 -> 成员节点的映射
+            center2nodes = defaultdict(list)
+            for node, center in node2center.items():
+                center2nodes[center].append(node)
 
             # Step 3: 初始化粗化图（保持原始图维度）
             A_coarse = torch.zeros_like(A)
@@ -313,36 +319,27 @@ class MSKGN(nn.Module):
                         continue  # （可选）不考虑内部自连接
                     A_coarse[cu, cv] += A[u, v]
             # （可选）去除自环
-            #A_coarse.fill_diagonal_(0)
-
-            # # Nyström 近似构建粗图
-            # Xc = X_feat[centers]
-            # K_mm = rbf(Xc, Xc)       # m×m
-            # K_nm = rbf(X_feat, Xc)   # n×m
-            # W    = K_nm @ torch.linalg.pinv(K_mm)  # n×m
-            # A_coarse = (W.t() @ K_nm)              # m×m
-            # A_coarse.fill_diagonal_(0)
-            # # Top-k 稀疏化
-            # for i in range(A_coarse.size(0)):
-            #     topk_idx = torch.topk(A_coarse[i], self.topk).indices
-            #     mask = torch.zeros_like(A_coarse[i])
-            #     mask[topk_idx] = 1
-            #     A_coarse[i] *= mask
-
+            A.fill_diagonal_(0)
+            A_up = A.clone()
+            for cu in center2nodes:
+                for cv in center2nodes:
+                    if cu == cv:
+                        continue
+                    edge_weight = A_coarse[cu, cv]
+                    if edge_weight == 0:
+                        continue  # 跳过无连接超节点
+                    for i in center2nodes[cu]:
+                        for j in center2nodes[cv]:
+                            A_up[i, j] += edge_weight  # 累加方式
             # 记录 down & up
             ei_d, ew_d = dense_to_sparse(A_coarse.to(device))
             edge_down.append((ei_d, ew_d.unsqueeze(-1)))
-            ei_u, ew_u = dense_to_sparse((A_coarse+A).to(device))
+
+            ei_u, ew_u = dense_to_sparse((A_up).to(device))
             edge_up.append((ei_u, ew_u.unsqueeze(-1)))
 
-            # 下一层同层 mid
             ei_m, ew_m = dense_to_sparse(A.to(device))
             edge_mid.append((ei_m, ew_m.unsqueeze(-1)))
-
-            # # 更新 A, X_feat, curr_idx
-            # A = A_coarse.to(device)
-            # X_feat = X_feat[centers]
-            # curr_idx = centers
 
         return centers,part,{
             'clusters':  clusters,
@@ -365,53 +362,55 @@ class MSKGN(nn.Module):
         # 多尺度图预处理
         mg = self.mg
         # clusters, edge_down/mid/up 各为-length lists
-        features = {'input': x.clone()}
+        features = {'input': x}
         # V-Cycle 消息传递
         for t in range(1):  # 如果需要多次迭代，可改为 range(depth)
             # DOWNWARD: l=0..L-2
             for l in range(self.levels):
                 ei, ew = mg['edge_down'][l]
-                x_l = x[:, :, :]  # 当前层 feature
+                x_l = x.clone()  # 当前层 feature
                 # 聚合到粗层节点 order 与 clusters[l+1] 对齐
                 msg = self.conv_down[l](x_l, ei, ew)  # [B, n_{l+1}, F]
                 # 将 msg 对应位置取出
                 for node, comm in self.part.items():
                     center = self.center[comm]  # 找到当前节点所属社区的中心节点
                     x_l[:,node,:] = msg[:,center,:]  # 将中心节点特征映射给该节点
-                features[f'down_l{l}'] = x_l.clone()
-            # UPWARD: l=L-1..0
-            for l in range(self.levels):
+                features[f'down_l{l}'] = x_l
                 # 同层 mid
                 ei_m, ew_m = mg['edge_mid'][l]
                 x_m = x + self.conv_mid[l](x, ei_m, ew_m)
                 #x_m = F.relu(x_m)
-                features[f'mid_l{l}'] = x_m.clone()
+                features[f'mid_l{l}'] = x_m
 
-                # up-scale
-                ei_u, ew_u = mg['edge_up'][l]
-                msg_up = x+self.conv_up[l](x, ei_u, ew_u)
-                msg_up = F.relu(msg_up)
-                features[f'up_l{l}'] = msg_up.clone()
-        # Select a batch and node to visualize
-        batch_idx = 0
-        first_ei = mg['edge_down'][l][0]
-        # pick first source node
-        node_idx = int(first_ei[0,0].item())
-        import matplotlib.pyplot as plt
-        # Plot feature values across stages
-        stages = list(features.keys())
-        plt.figure(figsize=(15,5))
-        for stage in stages:
-            feat_vec = features[stage][batch_idx, node_idx, :].detach().cpu().numpy()
-            plt.plot(range(dim), feat_vec, label=stage)
+                # # up-scale
+                # ei_u, ew_u = mg['edge_up'][l]
+                # msg_up = x+self.conv_up[l](x, ei_u, ew_u)
+                # msg_up = F.relu(msg_up)
+                # features[f'up_l{l}'] = msg_up
 
-        plt.title(f'Feature Evolution for B={batch_idx}, Node={node_idx}')
-        plt.xlabel('Feature Dimension')
-        plt.ylabel('Feature Value')
-        plt.legend()
-        plt.show()
+                concat = torch.cat([x, x_l, x_m], dim=-1)  # [B,N,F+3H]
+                fused = F.relu(self.projs[l](concat))
+        if self.vis:
+            # Select a batch and node to visualize
+            batch_idx = 0
+            first_ei = mg['edge_down'][l][0]
+            # pick first source node
+            node_idx = int(first_ei[0,0].item())
+            import matplotlib.pyplot as plt
+            # Plot feature values across stages
+            stages = list(features.keys())
+            plt.figure(figsize=(15,5))
+            for stage in stages:
+                feat_vec = features[stage][batch_idx, node_idx, :].detach().cpu().numpy()
+                plt.plot(range(dim), feat_vec, label=stage)
+
+            plt.title(f'Feature Evolution for B={batch_idx}, Node={node_idx}')
+            plt.xlabel('Feature Dimension')
+            plt.ylabel('Feature Value')
+            plt.legend()
+            plt.show()
         # 最终投影回一维输出
-        return x.unsqueeze(-1).transpose(1, 2)
+        return fused.unsqueeze(-1).transpose(1, 2)
 
 class BatchedSparseNNConv(nn.Module):
     def __init__(self, in_channels, out_channels, edge_mlp, aggr='add'):

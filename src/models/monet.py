@@ -12,32 +12,26 @@ from .UniMoudle import *
 class MoNet(BaseModel):
     def __init__(self, input_dim,output_dim,model_config):
         super(MoNet, self).__init__(input_dim,output_dim)
-        self.input_dim = output_dim
+        self.input_dim = input_dim - 2
+        self.corvar_dim = self.input_dim-1
+        self.output_dim = output_dim
 
         self.A = model_config['adj']
         self.eigvecs,self.eigval = compute_laplacian(self.A)
-        self.num_nodes = model_config['num_nodes']
+        self.num_nodes = self.A.shape[0]
 
         batch_size = model_config['bs']
         seq_len = model_config['seq_len']
         emd_dim = model_config['emd_dim']
 
         hidden_dim = model_config['hidden_dim']
-        tcn_layers = model_config['tcn_layers']
-        kno_layers = model_config['kno_layers']
 
-
-        self.location = model_config['location']
-        self.location = self.location.unsqueeze(0).unsqueeze(2)
-        self.location = self.location.repeat(batch_size,1,seq_len,1).float()
-        
         #tod,dow,node,location,common_feat
         #embedding param
         self.emd_dim = emd_dim
         self.data_embedding = nn.Linear(self.input_dim, emd_dim)
-        self.tod_embedding = nn.Linear(self.input_dim, emd_dim//2)
-        self.dow_embedding = nn.Linear(self.input_dim, emd_dim//2)
-        self.loaction_embedding = nn.Linear(self.input_dim*3, emd_dim)
+        self.tod_embedding = nn.Linear(1, emd_dim//2)
+        self.dow_embedding = nn.Linear(1, emd_dim//2)
         self.fusion_embedding = nn.Linear(self.emd_dim*3, emd_dim)
 
         num_conditon = 3
@@ -62,7 +56,7 @@ class MoNet(BaseModel):
 
         # embedding layer
         self.time_series_emb_layer = nn.Conv2d(
-            in_channels=3 * seq_len, out_channels=emd_dim, kernel_size=(1, 1), bias=True)
+            in_channels=input_dim * seq_len, out_channels=emd_dim, kernel_size=(1, 1), bias=True)
 
 
 
@@ -79,24 +73,21 @@ class MoNet(BaseModel):
         self.activation = nn.ReLU()
         #output_fusion
         self.output_fusion = nn.Sequential(
-            nn.Linear(self.hidden_dim, self.emd_dim),
+            nn.Linear(self.hidden_dim+self.emd_dim, self.emd_dim),
             self.activation,
             nn.Dropout(p=0.15),
-            nn.Linear(self.emd_dim, 1))
-        self.res_layer = nn.Conv2d(
-            in_channels=self.hidden_dim, out_channels=seq_len, kernel_size=(1, 1), bias=True)
-        # self.regression_layer = nn.Conv2d(
-        #     in_channels=self.hidden_dim, out_channels=seq_len, kernel_size=(1, 1), bias=True)
+            nn.Linear(self.emd_dim, self.output_dim))
         self.res_layer = MultiLayerPerceptron(self.hidden_dim, seq_len)
 
 
 
     def STIDemd(self,input):
+        assert input[:, :, :, self.input_dim + 1].max() < 1,input[:, :, :, self.input_dim+1].max().item() # 检查是否略大于 1.0
+        assert input[:, :, :, self.input_dim].max() < 1,input[:, :, :, self.input_dim].max().item()
 
         time_in_day_emb = self.time_in_day_emb[(input[:, -1:, :,self.input_dim] * 288).type(torch.LongTensor)]
         day_in_week_emb = self.day_in_week_emb[(input[:, -1:, :,self.input_dim+1] * 7).type(torch.LongTensor)]
 
-        #xyz = self.loaction_embedding(location)
         # time series embedding
         batch_size, seq_len, num_nodes, _ = input.shape
         input = input.transpose(1, 2).contiguous()
@@ -125,7 +116,7 @@ class MoNet(BaseModel):
         #b,emd*4,nodes,feat,
         #b,feat,nodes,seq_len
         return hidden.view(batch_size, self.hidden_dim,num_nodes,-1),hidden
-    def embedding(self,input,time,location,embway="SOP"):
+    def embedding(self,input,time,embway="SOP"):
         tod = self.tod_embedding(time[:,:,:,:1])
         dow = self.dow_embedding(time[:, :, :, 1:])
         #xyz = self.loaction_embedding(location)
@@ -155,14 +146,15 @@ class MoNet(BaseModel):
         #batch,len,nodes,feat
         X = input[:,:,:,:self.input_dim]
         time = input[:,:,:,self.input_dim:]
-        X = self.embedding(X,time,self.location,self.emb_way)
+        X = self.embedding(X,time,self.emb_way)
         #b,feat,nodes,len x_phy:b,n,l,f
-        #X_phy = self.Field(X.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
+        X_phy = self.Field(X.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
         mix_X,_ = self.STIDemd(input)
-        #x_res = self.res_layer(mix_X)
+        x_res = self.res_layer(mix_X)
         X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,self.seq_len).transpose(1,3)
-        #y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
-        y_hat = self.output_fusion(X_exdif)
+        #+self.activation(x_res)
+        y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
+        #y_hat = self.output_fusion(X_exdif)
 
 
 
