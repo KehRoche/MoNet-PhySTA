@@ -149,7 +149,8 @@ def get_dataset_info(dataset):
          'SD': [base_dir+'sd', base_dir+'sd/sd_rn_adj.npy', 716],
          'PEMS-BAY': [base_dir+'PEMS-BAY',base_dir+'PEMS-BAY/adj_mx_bay.pkl',325],
          'PEMS08': [base_dir + 'PEMS08', base_dir + 'PEMS08/adj_mx_08_distance.npy', 170],
-         'KnowAir': [base_dir + 'KnowAir', base_dir + 'KnowAir/adj_matrix.npy', 184]
-        }
+         'KnowAir': [base_dir + 'KnowAir', base_dir + 'KnowAir/adj_matrix.npy', 184],
+         'BJAir': [base_dir + 'BJAir', base_dir + 'BJAir/BJAir.npy', 35]
+    }
     assert dataset in d.keys()
     return d[dataset]
