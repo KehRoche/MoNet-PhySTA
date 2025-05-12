@@ -1,8 +1,7 @@
 config1:
-  #dataset: 'PEMS-BAY'
-
+  dataset: 'PEMS-BAY'
   #dataset: 'KnowAir'
-  dataset: 'BJAir'
+  #dataset: 'BJAir'
   #dataset: 'SD'
   model_name: 'monet'
   # Model Args

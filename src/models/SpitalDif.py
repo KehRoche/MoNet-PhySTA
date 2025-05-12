@@ -230,29 +230,13 @@ class MSKGN(nn.Module):
         self.conv_up   = nn.ModuleList()
         for l in range(levels):
             # 同层 mid-scale 卷积
-            mlp_mid = nn.Sequential(
-                nn.Linear(1, kernel_nn_hidden),
-                nn.ReLU(),
-                nn.Linear(kernel_nn_hidden, hidden_channels*hidden_channels)
-            )
-            self.conv_mid.append(BatchedSparseNNConv(hidden_channels, hidden_channels, mlp_mid, aggr='mean'))
-
-
+            self.conv_mid.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, aggr='mean'))
             # 下行跨层 conv_down[l]: l->l+1
-            mlp_down = nn.Sequential(
-                nn.Linear(1, kernel_nn_hidden),
-                nn.ReLU(),
-                nn.Linear(kernel_nn_hidden, hidden_channels*hidden_channels)
-            )
-            self.conv_down.append(BatchedSparseNNConv(hidden_channels, hidden_channels, mlp_down, aggr='mean'))
+
+            self.conv_down.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, aggr='mean'))
 
             # 上行跨层 conv_up[l]: (l+1)->l
-            mlp_up = nn.Sequential(
-                nn.Linear(1, kernel_nn_hidden),
-                nn.ReLU(),
-                nn.Linear(kernel_nn_hidden, hidden_channels*hidden_channels)
-            )
-            self.conv_up.append(BatchedSparseNNConv(hidden_channels, hidden_channels, mlp_up, aggr='mean'))
+            #self.conv_up.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, mlp_up, aggr='mean'))
         self.center,self.part,self.mg = self.multiscale_graph(adj_matrix.squeeze(-1))
         self.projs = nn.ModuleList([
             nn.Linear( 3 * hidden_channels, hidden_channels),
@@ -447,6 +431,43 @@ class BatchedSparseNNConv(nn.Module):
         N_target = N if N==x.size(1) else edge_attr.size(0)  # 仅为模板
         out = scatter(M, tgt.unsqueeze(0).expand(B, -1), dim=1, dim_size=N_target, reduce=self.aggr)
         return out
+
+
+class BatchedSparseFiLMConv(nn.Module):
+    def __init__(self, hidden,out_channels, aggr='add'):
+        super().__init__()
+        self.in_channels = hidden
+        self.edge_emd = 8
+        self.edge_proj = nn.Linear(1, self.edge_emd )
+        self.cond_mlp = nn.Sequential(
+            nn.Linear(self.edge_emd  + 2*self.in_channels, 64),  # 多了一个 x_tgt 大小
+            nn.ReLU(),
+            nn.Linear(64, 2 * self.in_channels)
+        )
+        self.aggr = aggr
+
+    def forward(self, x, edge_index, edge_attr):
+        B, N, Fin = x.size()
+        src, tgt = edge_index
+        E = src.size(0)
+
+        x_src = x[:, src, :]     # [B, E, Fin]
+        x_tgt = x[:, tgt, :]     # [B, E, Fin]
+        e_proj = self.edge_proj(edge_attr)  # [E, Fin]
+        e_proj = e_proj.unsqueeze(0).expand(B, -1, -1)
+
+        # 组合边标量 + 源节点 + 目标节点
+        cond = torch.cat([e_proj, x_src, x_tgt], dim=-1)    # [B, E, 1+2*Fin]
+        phi = self.cond_mlp(cond)                     # [B, E, 2*Fin]
+        gamma, beta = phi.chunk(2, dim=-1)            # 各 [B, E, Fin]
+
+        # 用 FiLM 调制源节点特征
+        m = gamma * x_src + beta                      # [B, E, Fin]
+        out = scatter(m, tgt.unsqueeze(0).expand(B, -1),
+                      dim=1, dim_size=N, reduce=self.aggr)
+        return out
+
+
 
 
 

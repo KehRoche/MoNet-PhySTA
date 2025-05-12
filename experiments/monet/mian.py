@@ -127,7 +127,6 @@ def objective(trial):
     hype_config = {
         #"hidden_channels": trial.suggest_categorical("hidden_channels",[[16],[16,32],[16,32,64]]),
         #"tcn_layers": trial.suggest_int("tcn_layers", 1, 5),
-        #"kernel_size": trial.suggest_int("kernel_size", 1, 5,step=2),
         #"GBA","SD",
         "dataset": trial.suggest_categorical("dataset",["PEMS-BAY"]),
         #"emb_way": trial.suggest_categorical("emb_way", ["SOP","SO","OP","O"]),

@@ -28,6 +28,18 @@ class MONET_Engine(BaseEngine):
         for X, label in self._dataloader['train_loader'].get_iterator():
             self._optimizer.zero_grad()
             X, label = self._to_device(self._to_tensor([X, label]))
+            # mask_ratio = 0.1
+            # # 获取节点数量 N（假设 X 形状为 [B, N, ...]）
+            # N = X.size(1)
+            # # 随机选取要屏蔽的节点索引
+            # num_mask = int(N * mask_ratio)
+            # mask_idx = torch.randperm(N, device=X.device)[:num_mask]
+
+            # 对选中的节点，在特征和标签上全部置零
+            # 如果 X 维度为 [B, N, F] 或 [B, N, T, F]，请相应调整下标
+            X[:, mask_idx, ...] = 0
+            label[:, mask_idx, ...] = 0
+
             pred = self.model(X, label)
             pred, label = self._inverse_transform([pred, label])
 
