@@ -44,19 +44,19 @@ class SpectralFilter(nn.Module):
 
 class SpecGraphFreqNet(nn.Module):
     def __init__(self,
-                 in_channels, out_channels, energy_splits=(0.8,0.95)):
+                 in_channels, hidden_dim, energy_splits=(0.8,0.95)):
         super().__init__()
         self.F_in = in_channels
-        self.F_out = out_channels
+        self.hidden_dim = hidden_dim
         self.low_cut, self.mid_cut = energy_splits
 
         # 四段 SpectralFilter，但内部全共享 FNO 风格线性层
-        self.filter_high = SpectralFilter(in_channels, out_channels)
-        self.filter_mid  = SpectralFilter(in_channels, out_channels)
-        self.filter_low  = SpectralFilter(in_channels, out_channels)
-        self.filter_neg  = SpectralFilter(in_channels, out_channels)
+        self.filter_high = SpectralFilter(in_channels, hidden_dim)
+        self.filter_mid  = SpectralFilter(in_channels, hidden_dim)
+        self.filter_low  = SpectralFilter(in_channels, hidden_dim)
+        self.filter_neg  = SpectralFilter(in_channels, hidden_dim)
 
-        self.proj   = nn.Linear(out_channels, out_channels)
+        self.proj   = nn.Linear(hidden_dim, in_channels)
 
     def forward(self, x, eigvecs, lambdas):
         B, N, T, F = x.shape
@@ -84,7 +84,7 @@ class SpecGraphFreqNet(nn.Module):
         neg_idx  = neg_mask.nonzero().squeeze()
 
         # 3. 分段提取子张量并应用对应滤波器
-        y_spec = torch.zeros_like(x_spec)
+        y_spec = torch.zeros([B,N,x_spec.shape[2],self.hidden_dim], device=device).to(dtype=x_spec.dtype)
         if len(high_idx)>0:
             seg = x_spec[:, high_idx]            # [B, M_high, T, F]
             y_spec[:, high_idx] = self.filter_high(seg)

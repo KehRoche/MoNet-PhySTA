@@ -11,7 +11,7 @@ import torch.profiler
 
 class BaseEngine():
     def __init__(self, device, model, dataloader, scaler, sampler, loss_fn, lrate, optimizer, \
-                 scheduler, clip_grad_value, max_epochs, patience, log_dir, logger, seed):
+                 scheduler, clip_grad_value, max_epochs, patience, log_dir, logger, seed,mask_ratio):
         super().__init__()
         self._device = device
         self.model = model
@@ -32,6 +32,7 @@ class BaseEngine():
         self._save_path = log_dir
         self._logger = logger
         self._seed = seed
+        self.mask_ratio = mask_ratio
 
         self._logger.info('The number of parameters: {}'.format(self.model.param_num())) 
 

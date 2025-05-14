@@ -13,10 +13,10 @@ def get_public_config():
     parser.add_argument('--seq_len', type=int, default=12)
     parser.add_argument('--horizon', type=int, default=12)
     #knowair 15,bjair33
-    parser.add_argument('--input_dim', type=int, default=3)
+    parser.add_argument('--input_dim', type=int, default=15)
     parser.add_argument('--output_dim', type=int, default=1)
 
     parser.add_argument('--mode', type=str, default='train')
-    parser.add_argument('--max_epochs', type=int, default=100)
-    parser.add_argument('--patience', type=int, default=20)
+    parser.add_argument('--max_epochs', type=int, default=20)
+    parser.add_argument('--patience', type=int, default=10)
     return parser

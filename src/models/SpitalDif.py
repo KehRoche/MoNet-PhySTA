@@ -7,7 +7,6 @@ from sympy import false
 from .UniMoudle import *
 from .TempEvo import SubSeqForcast
 
-from torch_geometric.nn import NNConv
 from torch_geometric.utils import dense_to_sparse
 from torch_scatter import scatter
 
@@ -209,7 +208,7 @@ from torch_geometric.utils import dense_to_sparse
 from torch_scatter import scatter
 
 class MSKGN(nn.Module):
-    def __init__(self, hidden_channels: int, levels: int, adj_matrix,kernel_nn_hidden: int, topk: int = 5, gamma: float = 0.5):
+    def __init__(self, hidden_channels: int, levels: int, adj_matrix, topk: int = 5):
         """
         Multi-Scale Kernel Graph Network
         Args:
@@ -222,7 +221,6 @@ class MSKGN(nn.Module):
         super().__init__()
         self.levels = levels
         self.topk = topk
-        self.gamma = gamma
         self.vis = false
         # down / mid / up 三组卷积列表
         self.conv_down = nn.ModuleList()
@@ -236,10 +234,10 @@ class MSKGN(nn.Module):
             self.conv_down.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, aggr='mean'))
 
             # 上行跨层 conv_up[l]: (l+1)->l
-            #self.conv_up.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, mlp_up, aggr='mean'))
+            self.conv_up.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, aggr='mean'))
         self.center,self.part,self.mg = self.multiscale_graph(adj_matrix.squeeze(-1))
         self.projs = nn.ModuleList([
-            nn.Linear( 3 * hidden_channels, hidden_channels),
+            nn.Linear( 4 * hidden_channels, hidden_channels),
             nn.ReLU()]
             )
         # 输入与输出投影
@@ -259,6 +257,7 @@ class MSKGN(nn.Module):
         """
         device = A.device
         N = A.size(0)
+        top_k = 5
         # 初始图
         clusters = []
         edge_down, edge_mid, edge_up = [], [], []
@@ -266,64 +265,67 @@ class MSKGN(nn.Module):
         curr_idx = torch.arange(N, device=device)
         clusters.append(curr_idx)
 
-        # 递归粗化
-        for l in range(self.levels):
-            # 构建 NetworkX 做 Louvain
-            A = A.clamp(min=0.0)
-            G = nx.from_numpy_array(A.detach().cpu().numpy())
-            for u,v in G.edges():
-                G[u][v]['weight'] = float(A[u,v])
-            part = community_louvain.best_partition(G, weight='weight')
-            # 社区中心
-            # 社区 -> 成员节点映射
-            comms = defaultdict(list)
-            for node, comm in part.items():
-                comms[comm].append(node)
+        # 构建 NetworkX 做 Louvain
+        A = A.clamp(min=0.0)
+        G = nx.from_numpy_array(A.detach().cpu().numpy())
+        for u,v in G.edges():
+            G[u][v]['weight'] = float(A[u,v])
+        part = community_louvain.best_partition(G, weight='weight')
+        # 社区中心
+        # 社区 -> 成员节点映射
+        comms = defaultdict(list)
+        for node, comm in part.items():
+            comms[comm].append(node)
 
-            # 社区编号列表
-            # 找到每个社区的“中心节点” = 权重度最大节点
-            centers = {comm: max(nodes, key=lambda i: G.degree(i, weight='weight'))
-                       for comm, nodes in comms.items()}
+        # 社区编号列表
+        # 找到每个社区的“中心节点” = 权重度最大节点
+        centers = {comm: max(nodes, key=lambda i: G.degree(i, weight='weight'))
+                   for comm, nodes in comms.items()}
 
-            # 建立原始节点 -> 所属中心映射
-            node2center = {node: centers[comm] for comm, nodes in comms.items() for node in nodes}
-            # 2. 构建中心节点 -> 成员节点的映射
-            center2nodes = defaultdict(list)
-            for node, center in node2center.items():
-                center2nodes[center].append(node)
+        # 建立原始节点 -> 所属中心映射
+        node2center = {node: centers[comm] for comm, nodes in comms.items() for node in nodes}
+        # 2. 构建中心节点 -> 成员节点的映射
+        center2nodes = defaultdict(list)
+        for node, center in node2center.items():
+            center2nodes[center].append(node)
 
-            # Step 3: 初始化粗化图（保持原始图维度）
-            A_coarse = torch.zeros_like(A)
-            # Step 4: 汇聚边权到对应中心节点之间
-            for u in range(A.shape[0]):
-                for v in range(A.shape[1]):
-                    cu = node2center[u]
-                    cv = node2center[v]
-                    if cu == cv:
-                        continue  # （可选）不考虑内部自连接
-                    A_coarse[cu, cv] += A[u, v]
-            # （可选）去除自环
-            A.fill_diagonal_(0)
-            A_up = A.clone()
-            for cu in center2nodes:
-                for cv in center2nodes:
-                    if cu == cv:
-                        continue
-                    edge_weight = A_coarse[cu, cv]
-                    if edge_weight == 0:
-                        continue  # 跳过无连接超节点
-                    for i in center2nodes[cu]:
-                        for j in center2nodes[cv]:
-                            A_up[i, j] += edge_weight  # 累加方式
-            # 记录 down & up
-            ei_d, ew_d = dense_to_sparse(A_coarse.to(device))
-            edge_down.append((ei_d, ew_d.unsqueeze(-1)))
+        # Step 3: 初始化粗化图（保持原始图维度）
+        A_coarse = torch.zeros_like(A)
+        # Step 4: 汇聚边权到对应中心节点之间
+        for u in range(A.shape[0]):
+            for v in range(A.shape[1]):
+                cu = node2center[u]
+                cv = node2center[v]
+                if cu == cv:
+                    continue  # （可选）不考虑内部自连接
+                A_coarse[cu, cv] += A[u, v]
+        # （可选）去除自环
+        A_up = torch.zeros_like(A)
+        for cu in center2nodes:
+            for cv in center2nodes:
+                if cu == cv:
+                    continue
+                edge_weight = A_coarse[cu, cv]
+                if edge_weight == 0:
+                    continue  # 跳过无连接超节点
+                for i in center2nodes[cu]:
+                    for j in center2nodes[cv]:
+                        A_up[i, j] += edge_weight  # 累加方式
+        # For each row i, retain top_k entries, zero out others
+        topk_vals, topk_idx = torch.topk(A_up, k=min(top_k, N), dim=1)
+        mask = torch.zeros_like(A_up)
+        rows = torch.arange(N, device=device).unsqueeze(1).repeat(1, topk_idx.size(1))
+        mask[rows, topk_idx] = 1
+        A_up = A_up * mask + A
+        # 记录 down & up
+        ei_d, ew_d = dense_to_sparse(A_coarse.to(device))
+        edge_down.append((ei_d, ew_d.unsqueeze(-1)))
 
-            ei_u, ew_u = dense_to_sparse((A_up).to(device))
-            edge_up.append((ei_u, ew_u.unsqueeze(-1)))
+        ei_u, ew_u = dense_to_sparse((A_up).to(device))
+        edge_up.append((ei_u, ew_u.unsqueeze(-1)))
 
-            ei_m, ew_m = dense_to_sparse(A.to(device))
-            edge_mid.append((ei_m, ew_m.unsqueeze(-1)))
+        ei_m, ew_m = dense_to_sparse(A.to(device))
+        edge_mid.append((ei_m, ew_m.unsqueeze(-1)))
 
         return centers,part,{
             'clusters':  clusters,
@@ -348,32 +350,30 @@ class MSKGN(nn.Module):
         # clusters, edge_down/mid/up 各为-length lists
         features = {'input': x}
         # V-Cycle 消息传递
-        for t in range(1):  # 如果需要多次迭代，可改为 range(depth)
-            # DOWNWARD: l=0..L-2
-            for l in range(self.levels):
-                ei, ew = mg['edge_down'][l]
-                x_l = x.clone()  # 当前层 feature
-                # 聚合到粗层节点 order 与 clusters[l+1] 对齐
-                msg = self.conv_down[l](x_l, ei, ew)  # [B, n_{l+1}, F]
-                # 将 msg 对应位置取出
-                for node, comm in self.part.items():
-                    center = self.center[comm]  # 找到当前节点所属社区的中心节点
-                    x_l[:,node,:] = msg[:,center,:]  # 将中心节点特征映射给该节点
-                features[f'down_l{l}'] = x_l
-                # 同层 mid
-                ei_m, ew_m = mg['edge_mid'][l]
-                x_m = x + self.conv_mid[l](x, ei_m, ew_m)
-                #x_m = F.relu(x_m)
-                features[f'mid_l{l}'] = x_m
+        for l in range(self.levels):
+            ei, ew = mg['edge_down'][0]
+            x_l = x.clone()  # 当前层 feature
+            # 聚合到粗层节点 order 与 clusters[l+1] 对齐
+            msg = self.conv_down[l](x_l, ei, ew)  # [B, n_{l+1}, F]
+            # 将 msg 对应位置取出
+            for node, comm in self.part.items():
+                center = self.center[comm]  # 找到当前节点所属社区的中心节点
+                x_l[:,node,:] = msg[:,center,:]  # 将中心节点特征映射给该节点
+            features[f'down_l{l}'] = x_l
+            # 同层 mid
+            ei_m, ew_m = mg['edge_mid'][0]
+            x_m = x + self.conv_mid[l](x, ei_m, ew_m)
+            #x_m = F.relu(x_m)
+            features[f'mid_l{l}'] = x_m
 
-                # # up-scale
-                # ei_u, ew_u = mg['edge_up'][l]
-                # msg_up = x+self.conv_up[l](x, ei_u, ew_u)
-                # msg_up = F.relu(msg_up)
-                # features[f'up_l{l}'] = msg_up
+            # up-scale
+            ei_u, ew_u = mg['edge_up'][0]
+            x_up = x+self.conv_up[l](x, ei_u, ew_u)
+            x_up = F.relu(x_up)
+            features[f'up_l{l}'] = x_up
 
-                concat = torch.cat([x, x_l, x_m], dim=-1)  # [B,N,F+3H]
-                fused = F.relu(self.projs[l](concat))
+            concat = torch.cat([x, x_l, x_m,x_up], dim=-1)  # [B,N,F+3H]
+            x = F.relu(self.projs[0](concat))
         if self.vis:
             # Select a batch and node to visualize
             batch_idx = 0
@@ -394,7 +394,7 @@ class MSKGN(nn.Module):
             plt.legend()
             plt.show()
         # 最终投影回一维输出
-        return fused.unsqueeze(-1).transpose(1, 2)
+        return  x.unsqueeze(-1).transpose(1, 2)
 
 class BatchedSparseNNConv(nn.Module):
     def __init__(self, in_channels, out_channels, edge_mlp, aggr='add'):
