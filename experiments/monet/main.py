@@ -42,6 +42,17 @@ def get_config(config_path):
     parser.add_argument('--wdecay', type=float, default=1e-5)
     parser.add_argument('--dropout', type=float, default=0.1)
     parser.add_argument('--clip_grad_value', type=float, default=5)
+
+    parser.add_argument('--mask_ratio', type=float, default=0)
+    parser.add_argument('--dataset', type=str,default='PEMS-BAY')
+    parser.add_argument('--emd_dim', type=int, default=8, help="嵌入维度")
+    parser.add_argument('--gfno_hidden', type=int, default=8, help="GFNO隐藏层维度")
+    parser.add_argument('--energy_splits', nargs=2, type=float, default=[0.9, 0.95],
+                        help="谱能量划分阈值，格式为两个浮点数，如 0.9 0.95")
+    parser.add_argument('--topk_edges', type=int, default=3, help="Top-K边选择")
+    parser.add_argument('--ecc_layers', type=int, default=1, help="ECC图卷积层数")
+
+
     args = parser.parse_args()
 
     with open(config_path, 'r') as f:
@@ -53,9 +64,10 @@ def get_config(config_path):
         if value is not None:
             config[key] = value
 
-    log_dir = './experiments/{}/{}/'.format(args.model_name, config['dataset'])
+    keys_to_log = ['emd_dim', 'dataset','gfno_hidden','energy_splits', 'mask_ratio','topk_edges','ecc_layers']
+    log_dir = './eval/{}/{}/'.format(args.model_name, config['dataset'])
     logger = get_logger(log_dir, __name__, 'record_s{}.log'.format(args.seed))
-    logger.info(config)
+    logger.info("Param: %s",{k: config[k] for k in keys_to_log if k in config})
 
     return config, log_dir, logger
 
@@ -128,8 +140,7 @@ def objective(trial):
         #"hidden_channels": trial.suggest_categorical("hidden_channels",[[16],[16,32],[16,32,64]]),
         #"tcn_layers": trial.suggest_int("tcn_layers", 1, 5),
         #"GBA","SD",
-        "dataset": trial.suggest_categorical("dataset",["PEMS-BAY"]),
-        #"emb_way": trial.suggest_categorical("emb_way", ["SOP","SO","OP","O"]),
+        "dataset": trial.suggest_categorical("dataset",["PEMS-BAY","SD","KnowAir","BJAir"]),
         #"dropout": trial.suggest_float("dropout", 0.1,0.4,step=0.1 ),
         #"head_dropout": trial.suggest_float("head_dropout", 0.1,0.4,step=0.1 ),
         #"batch_size": trial.suggest_categorical("batch_size", [16, 32, 64, 128]),
@@ -217,8 +228,7 @@ def main():
                           cl_step=cl_step,
                           warm_step=warm_step,
                           horizon=config['horizon'],
-                          tempvar_penalty=config['temp_penalty'],
-                          spatialvar_penalty=config['spital_penalty']
+                          mask_ratio =config['mask_ratio']
                           )
 
     # 根据运行模式选择训练或评估

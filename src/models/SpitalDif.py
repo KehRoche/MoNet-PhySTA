@@ -257,7 +257,6 @@ class MSKGN(nn.Module):
         """
         device = A.device
         N = A.size(0)
-        top_k = 5
         # 初始图
         clusters = []
         edge_down, edge_mid, edge_up = [], [], []
@@ -312,7 +311,7 @@ class MSKGN(nn.Module):
                     for j in center2nodes[cv]:
                         A_up[i, j] += edge_weight  # 累加方式
         # For each row i, retain top_k entries, zero out others
-        topk_vals, topk_idx = torch.topk(A_up, k=min(top_k, N), dim=1)
+        topk_vals, topk_idx = torch.topk(A_up, k=min(self.topk, N), dim=1)
         mask = torch.zeros_like(A_up)
         rows = torch.arange(N, device=device).unsqueeze(1).repeat(1, topk_idx.size(1))
         mask[rows, topk_idx] = 1
@@ -362,14 +361,14 @@ class MSKGN(nn.Module):
             features[f'down_l{l}'] = x_l
             # 同层 mid
             ei_m, ew_m = mg['edge_mid'][0]
-            x_m = x + self.conv_mid[l](x, ei_m, ew_m)
+            x_m = self.conv_mid[l](x, ei_m, ew_m)
             #x_m = F.relu(x_m)
             features[f'mid_l{l}'] = x_m
 
             # up-scale
             ei_u, ew_u = mg['edge_up'][0]
-            x_up = x+self.conv_up[l](x, ei_u, ew_u)
-            x_up = F.relu(x_up)
+            x_up = self.conv_up[l](x, ei_u, ew_u)
+            #x_up = F.relu(x_up)
             features[f'up_l{l}'] = x_up
 
             concat = torch.cat([x, x_l, x_m,x_up], dim=-1)  # [B,N,F+3H]

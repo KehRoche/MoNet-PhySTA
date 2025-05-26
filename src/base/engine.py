@@ -34,6 +34,9 @@ class BaseEngine():
         self._seed = seed
         self.mask_ratio = mask_ratio
 
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        self.filename = f'model_{self.mask_ratio}_{timestamp}.pt'
+
         self._logger.info('The number of parameters: {}'.format(self.model.param_num())) 
 
 
@@ -71,14 +74,12 @@ class BaseEngine():
     def save_model(self, save_path):
         if not os.path.exists(save_path):
             os.makedirs(save_path)
-        filename = 'final_model_s{}.pt'.format(self._seed)
-        torch.save(self.model.state_dict(), os.path.join(save_path, filename))
+        torch.save(self.model.state_dict(), os.path.join(save_path, self.filename))
 
 
     def load_model(self, save_path):
-        filename = 'final_model_s{}.pt'.format(self._seed)
         self.model.load_state_dict(torch.load(
-            os.path.join(save_path, filename)))   
+            os.path.join(save_path, self.filename)))
 
 
     def train_batch(self):
