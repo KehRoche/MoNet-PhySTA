@@ -2,8 +2,6 @@ import torch
 import numpy as np
 from src.base.engine import BaseEngine
 from src.utils.metrics import masked_mape, masked_rmse
-import torch.profiler
-from torch.utils.tensorboard import SummaryWriter
 
 
 class MONET_Engine(BaseEngine):
@@ -28,15 +26,12 @@ class MONET_Engine(BaseEngine):
             self._optimizer.zero_grad()
             X, label = self._to_device(self._to_tensor([X, label]))
             # # 获取节点数量 N（假设 X 形状为 [B, N, ...]）
-            N = X.size(1)
-            # # 随机选取要屏蔽的节点索引
-            num_mask = int(N * self.mask_ratio)
-            mask_idx = torch.randperm(N, device=X.device)[:num_mask]
+
 
             # 对选中的节点，在特征和标签上全部置零
             # 如果 X 维度为 [B, N, F] 或 [B, N, T, F]，请相应调整下标
-            X[:, mask_idx, ...] = 0
-            label[:, mask_idx, ...] = 0
+            X[:,:,self.mask_idx, ...] = 0
+            label[:,:, self.mask_idx, ...] = 0
 
             pred = self.model(X, label)
             pred, label = self._inverse_transform([pred, label])
@@ -66,7 +61,7 @@ class MONET_Engine(BaseEngine):
             # spatial_var = torch.var(pred, dim=2, keepdim=False)  # 移除空间维度
             # spatial_penalty = torch.mean(spatial_var) * self.spatialvar_penalty
             #+temporal_penalty+spatial_penalty
-            loss = self._loss_fn(pred, label, mask_value)
+            loss = self._loss_fn(pred, label, mask_value,self.mask_idx)
             mape = masked_mape(pred, label, mask_value).item()
             rmse = masked_rmse(pred, label, mask_value).item()
 

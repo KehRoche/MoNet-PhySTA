@@ -11,7 +11,7 @@ import torch.profiler
 
 class BaseEngine():
     def __init__(self, device, model, dataloader, scaler, sampler, loss_fn, lrate, optimizer, \
-                 scheduler, clip_grad_value, max_epochs, patience, log_dir, logger, seed,mask_ratio):
+                 scheduler, clip_grad_value, max_epochs, patience, log_dir, logger, seed, mask_ratio):
         super().__init__()
         self._device = device
         self.model = model
@@ -32,13 +32,16 @@ class BaseEngine():
         self._save_path = log_dir
         self._logger = logger
         self._seed = seed
+
         self.mask_ratio = mask_ratio
+        self.N = self._dataloader['train_loader'].data.shape[1]
+        num_mask = int(self.N * self.mask_ratio)
+        self.mask_idx = torch.randperm(self.N)[:num_mask]
 
         timestamp = time.strftime("%Y%m%d-%H%M%S")
         self.filename = f'model_{self.mask_ratio}_{timestamp}.pt'
 
-        self._logger.info('The number of parameters: {}'.format(self.model.param_num())) 
-
+        self._logger.info('The number of parameters: {}'.format(self.model.param_num()))
 
     def _to_device(self, tensors):
         if isinstance(tensors, list):
@@ -46,20 +49,17 @@ class BaseEngine():
         else:
             return tensors.to(self._device)
 
-
     def _to_numpy(self, tensors):
         if isinstance(tensors, list):
             return [tensor.detach().cpu().numpy() for tensor in tensors]
         else:
             return tensors.detach().cpu().numpy()
 
-
     def _to_tensor(self, nparray):
         if isinstance(nparray, list):
             return [torch.tensor(array, dtype=torch.float32) for array in nparray]
         else:
             return torch.tensor(nparray, dtype=torch.float32)
-
 
     def _inverse_transform(self, tensors):
         def inv(tensor):
@@ -70,17 +70,16 @@ class BaseEngine():
         else:
             return inv(tensors)
 
-
     def save_model(self, save_path):
         if not os.path.exists(save_path):
             os.makedirs(save_path)
+        filename = 'final_model_s{}.pt'.format(self._seed)
         torch.save(self.model.state_dict(), os.path.join(save_path, self.filename))
 
-
     def load_model(self, save_path):
+        filename = 'final_model_s{}.pt'.format(self._seed)
         self.model.load_state_dict(torch.load(
             os.path.join(save_path, self.filename)))
-
 
     def train_batch(self):
         self.model.train()
@@ -120,9 +119,8 @@ class BaseEngine():
             self._iter_cnt += 1
         return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)
 
-
-    def train(self,swanlab_run=None):
-        #self._logger.info('Start training!')
+    def train(self, swanlab_run=None):
+        # self._logger.info('Start training!')
 
         wait = 0
         min_loss = np.inf
@@ -132,7 +130,7 @@ class BaseEngine():
             t2 = time.time()
 
             v1 = time.time()
-            mvalid_loss, mvalid_mape, mvalid_rmse = self.evaluate('val',swanlab_run)
+            mvalid_loss, mvalid_mape, mvalid_rmse = self.evaluate('val', swanlab_run)
             v2 = time.time()
 
             if self._lr_scheduler is None:
@@ -147,8 +145,8 @@ class BaseEngine():
             #                                  (t2 - t1), (v2 - v1), cur_lr))
 
             if mvalid_loss < min_loss:
-                self.save_model(self._save_path)
-                self._logger.info('Val loss decrease from {:.4f} to {:.4f}'.format(min_loss, mvalid_loss))
+                # self.save_model(self._save_path)
+                # self._logger.info('Val loss decrease from {:.4f} to {:.4f}'.format(min_loss, mvalid_loss))
                 min_loss = mvalid_loss
                 wait = 0
             else:
@@ -158,23 +156,22 @@ class BaseEngine():
                     break
 
             if swanlab_run is not None:
-                train_info = {"train_time":(t2-t1),
+                train_info = {"train_time": (t2 - t1),
                               "train_loss": mtrain_loss,
                               "train_mape": mtrain_mape,
                               "train_rmse": mtrain_rmse,
-                              "valid_time":(v2-v1),
+                              "valid_time": (v2 - v1),
                               "valid_loss": mvalid_loss,
                               "valid_mape": mvalid_mape,
                               "valid_rmse": mvalid_rmse,
-                }
+                              }
                 swanlab_run.log(train_info)
-        loss = self.evaluate('test',swanlab_run)
+        loss = self.evaluate('test', swanlab_run)
         return loss
 
-
-    def evaluate(self, mode,swanlab_run=None):
-        if mode == 'test':
-            self.load_model(self._save_path)
+    def evaluate(self, mode, swanlab_run=None):
+        # if mode == 'test':
+        #     self.load_model(self._save_path)
         self.model.eval()
 
         preds = []
@@ -183,21 +180,8 @@ class BaseEngine():
             for X, label in self._dataloader[mode + '_loader'].get_iterator():
                 # X (b, t, n, f), label (b, t, n, 1)
                 X, label = self._to_device(self._to_tensor([X, label]))
-                # #if mode == 'test':
-                # #nosie add
-                # batch_size, time_steps, num_nodes, num_features = X.shape
-                # num_replace = max(1, int(num_nodes * 0.1))  # 至少替换 1 个节点
-                # assert num_replace <= num_nodes, "num_replace cannot exceed num_nodes"
-                # replace_indices = torch.randperm(num_nodes, device=X.device)[:num_replace]
-                # # 关键修复2：显式约束索引范围
-                # replace_indices = torch.clamp(replace_indices, 0, num_nodes - 1)
-                #
-                # # 更换为高斯噪声
-                # mean = 0.0  # 高斯分布的均值
-                # std_dev = 1.0  # 高斯分布的标准差
-                # random_values = mean + std_dev * torch.randn((batch_size, time_steps, num_replace, 1),
-                #                                              device=X.device)
-                # X[:, :, replace_indices, :1] = random_values
+                mask_idx = self.mask_idx.to(X.device)
+                X[:, :, mask_idx, ...] = 0
                 X = X.contiguous()
                 pred = self.model(X, label)
                 pred, label = self._inverse_transform([pred, label])
@@ -230,13 +214,14 @@ class BaseEngine():
             test_rmse = []
             print('Check mask value', mask_value)
             for i in range(self.model.horizon):
-                res = compute_all_metrics(preds[:,i,:], labels[:,i,:], mask_value)
+                res = compute_all_metrics(preds[:, i, :], labels[:, i, :], mask_value)
                 log = 'Horizon {:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}'
+                self._logger.info(log.format(i + 1, res[0], res[2], res[1]))
                 if swanlab_run is not None:
                     self._logger.info(log.format(i + 1, res[0], res[2], res[1]))
-                    swanlab_run.log({"test_mae":res[0]})
-                    swanlab_run.log({"test_mape":res[1]})
-                    swanlab_run.log({"test_rmse":res[2]})
+                    swanlab_run.log({"test_mae": res[0]})
+                    swanlab_run.log({"test_mape": res[1]})
+                    swanlab_run.log({"test_rmse": res[2]})
                 test_mae.append(res[0])
                 test_mape.append(res[1])
                 test_rmse.append(res[2])
