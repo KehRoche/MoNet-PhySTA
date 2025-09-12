@@ -279,40 +279,44 @@ def _compute_undirected_laplacian(adj_matrix):
     eigvecs = eigvecs / eigvecs.norm(dim=0, keepdim=True)  # 归一化
     return eigvecs, eigvals
 
-def _compute_directed_laplacian(adj_matrix):
+def _compute_directed_laplacian(A, q=0.25, normalized=True, deg_mode='herm', eps=1e-12):
     """
     计算有向图的磁性拉普拉斯矩阵（保留原逻辑）
     """
-    diff_matrix = adj_matrix - adj_matrix.T
+    A = A.to(dtype=torch.get_default_dtype())
+    device = A.device
+    N = A.shape[0]
 
-    # 定义显著性阈值（基于差异的绝对值）
-    threshold = torch.quantile(diff_matrix[diff_matrix != 0].abs(), 0.5)
+    diff = A - A.T
+    S = torch.sign(diff)
+    base = float(q) * math.pi
+    phi = base * S
+    P = torch.exp(1j * phi)
 
-    # 生成二进制方向矩阵
-    dir_diff_matrix = torch.where(diff_matrix > threshold, diff_matrix, torch.zeros_like(diff_matrix))
+    A_complex = A * P
+    H = 0.5 * (A_complex + A_complex.conj().T)
+    H = 0.5 * (H + H.conj().T)
 
-    # 根据原始权重增强方向差异矩阵
-    weight_threshold = torch.median(adj_matrix[adj_matrix != 0])
-    weight_mask = (adj_matrix > weight_threshold).float()
-    A_dir = dir_diff_matrix * weight_mask
+    if deg_mode == 'herm':
+        deg = H.sum(dim=1).real.clamp_min(0.0)
+    elif deg_mode == 'abs':
+        deg = A_complex.abs().sum(dim=1).clamp_min(0.0)
+    else:
+        raise ValueError("deg_mode must be 'herm' or 'abs'")
 
-    # 构造带相位的复数邻接矩阵
-    q = 0.25  # 相位参数
-    theta = torch.tensor(q * (2 * math.pi))
-    phase = torch.complex(torch.cos(theta), torch.sin(theta))
+    if normalized:
+        inv_sqrt = (deg + eps).rsqrt()
+        inv_sqrt_diag = torch.diag(inv_sqrt).to(H.dtype)
+        Hn = inv_sqrt_diag @ H @ inv_sqrt_diag
+        L = torch.eye(N, dtype=Hn.dtype, device=device) - Hn
+        L = 0.5 * (L + L.conj().T)
+    else:
+        D = torch.diag(deg).to(H.dtype)
+        L = D - H
+        L = 0.5 * (L + L.conj().T)
 
-    A_complex = adj_matrix * (1 + 0j)
-    A_complex[A_dir > 0] *= phase
-
-    # 计算磁性度矩阵
-    D_complex = torch.diag_embed(torch.sum(A_complex, dim=1))
-
-    # 构造磁性拉普拉斯矩阵
-    L_mag = D_complex - 0.5 * (A_complex + A_complex.conj().transpose(-2, -1))
-
-    # 特征分解
-    eigvals, eigvecs = torch.linalg.eigh(L_mag)
-    eigvecs = eigvecs / eigvecs.norm(dim=0, keepdim=True)  # 归一化
+    eigvals, eigvecs = torch.linalg.eigh(L)
+    eigvecs = eigvecs / (eigvecs.norm(dim=0, keepdim=True) + 1e-16)
     return eigvecs, eigvals
 
 class MultiLayerPerceptron(nn.Module):

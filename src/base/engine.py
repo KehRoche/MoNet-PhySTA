@@ -146,7 +146,7 @@ class BaseEngine():
 
             if mvalid_loss < min_loss:
                 # self.save_model(self._save_path)
-                # self._logger.info('Val loss decrease from {:.4f} to {:.4f}'.format(min_loss, mvalid_loss))
+                self._logger.info('Val loss decrease from {:.4f} to {:.4f}'.format(min_loss, mvalid_loss))
                 min_loss = mvalid_loss
                 wait = 0
             else:
@@ -154,18 +154,6 @@ class BaseEngine():
                 if wait == self._patience:
                     self._logger.info('Early stop at epoch {}, loss = {:.6f}'.format(epoch + 1, min_loss))
                     break
-
-            if swanlab_run is not None:
-                train_info = {"train_time": (t2 - t1),
-                              "train_loss": mtrain_loss,
-                              "train_mape": mtrain_mape,
-                              "train_rmse": mtrain_rmse,
-                              "valid_time": (v2 - v1),
-                              "valid_loss": mvalid_loss,
-                              "valid_mape": mvalid_mape,
-                              "valid_rmse": mvalid_rmse,
-                              }
-                swanlab_run.log(train_info)
         loss = self.evaluate('test', swanlab_run)
         return loss
 

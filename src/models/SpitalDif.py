@@ -42,9 +42,10 @@ class MSKGN(nn.Module):
             # 上行跨层 conv_up[l]: (l+1)->l
             self.conv_up.append(BatchedSparseFiLMConv(hidden_channels, hidden_channels, aggr='mean'))
         self.center,self.part,self.mg = self.multiscale_graph(adj_matrix.squeeze(-1))
-        self.projs = nn.ModuleList([
+        self.projs = nn.Sequential(
             nn.Linear( 4 * hidden_channels, hidden_channels),
-            nn.ReLU()]
+            nn.ReLU(),
+            nn.Linear( hidden_channels, hidden_channels//2)
             )
         # 输入与输出投影
         self.fc_in  = nn.Linear(1, hidden_channels)
@@ -178,7 +179,7 @@ class MSKGN(nn.Module):
             features[f'up_l{l}'] = x_up
 
             concat = torch.cat([x, x_l, x_m,x_up], dim=-1)  # [B,N,F+3H]
-            x = F.relu(self.projs[0](concat))
+            x = self.projs(concat)
         if self.vis:
             # Select a batch and node to visualize
             batch_idx = 0

@@ -3,7 +3,7 @@ import torch
 import torch.nn.functional as F
 import numpy as np
 from src.base.model import BaseModel
-from .PhyField import SpecGraphFreqNet
+from .PhyField import GTFNO2d
 from .SpitalDif import MSKGN
 from .UniMoudle import *
 
@@ -91,13 +91,13 @@ class MoNet(BaseModel):
         self.fusion_embedding = nn.Linear(self.emd_dim*2, emd_dim)
 
         #path
-        self.Field = SpecGraphFreqNet(emd_dim,self.gfno_hidden,self.energy_splits)
+        self.Field = GTFNO2d(x=self.num_nodes,t = seq_len,width = self.emd_dim)
         self.SptialModule = MSKGN(hidden_channels=self.hidden_dim, levels=self.graph_layers,adj_matrix=self.A,topk=self.topk_edges)
 
         #output_fusion
         self.output_fusion = nn.Sequential(
             #phy,sptial,side_embeding
-            nn.Linear(self.hidden_dim+(self.emd_dim * 2 if self.corvar_dim > 1 else self.emd_dim), self.emd_dim),
+            nn.Linear(self.hidden_dim//2+(self.emd_dim if self.corvar_dim > 1 else 0)+self.emd_dim, self.emd_dim),
             self.activation,
             nn.Dropout(p=0.15),
             nn.Linear(self.emd_dim, self.output_dim))
@@ -149,7 +149,7 @@ class MoNet(BaseModel):
         #xyz = self.loaction_embedding(location)
         condition_info = self.activation(torch.concat((tod, dow), dim=-1))
         input = self.data_embedding(input)
-        input = self.fusion_embedding(torch.cat((input,condition_info), dim=-1))
+        #input = self.fusion_embedding(torch.cat((input,condition_info), dim=-1))
         #emb_fea = self.dyn_gate(input,condition_info)
         return input
     def forward(self, input,  label=None):
@@ -158,20 +158,19 @@ class MoNet(BaseModel):
         fea = input[:,:,:,:1]
         time = input[:,:,:,self.fea_dim:]
 
-        X = self.embedding(fea,time)
+        #X = self.embedding(fea,time)
         #b,feat,nodes,len x_phy:b,n,l,f
-        X_phy = self.Field(X.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
-        mix_X,_ = self.STIDemd(torch.concat([fea,time],dim=-1))
-        X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,len).transpose(1,3)
-        x_res = self.res_layer(mix_X)
-        if self.corvar_dim > 0:
-            convar = input[:,:,:,1:self.corvar_dim+1]
-            x_side = self.side_encoding(convar.reshape(batch,-1,nodes,1))
-            x_side = x_side.reshape(batch,len,nodes,-1)
-            #x_res = x_res + x_side
-            y_hat = self.output_fusion(torch.cat((X_phy,X_exdif,x_side),dim=-1))+self.activation(x_res)
-        else:
-            y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
-        #return  y_hat.transpose_(1, 2)
-        return y_hat
+        X_phy = self.Field(fea.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
+        # mix_X,_ = self.STIDemd(torch.concat([fea,time],dim=-1))
+        # X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,len).transpose(1,3)
+        # x_res = self.res_layer(mix_X)
+        # if self.corvar_dim > 0:
+        #     convar = input[:,:,:,1:self.corvar_dim+1]
+        #     x_side = self.side_encoding(convar.reshape(batch,-1,nodes,1))
+        #     x_side = x_side.reshape(batch,len,nodes,-1)
+        #     #x_res = x_res + x_side
+        #     y_hat = self.output_fusion(torch.cat((X_phy,X_exdif,x_side),dim=-1))+self.activation(x_res)
+        # else:
+        #     y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
+        return X_phy
 
