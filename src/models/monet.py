@@ -111,6 +111,9 @@ class MoNet(BaseModel):
 
         time_in_day_emb = self.time_in_day_emb[(input[:, -1:, :,1] * self.time_interval).type(torch.LongTensor)]
         day_in_week_emb = self.day_in_week_emb[(input[:, -1:, :,2] * 7).type(torch.LongTensor)]
+
+        tod_full_emb = self.time_in_day_emb[(input[:, :, :,1] * self.time_interval).type(torch.LongTensor)]
+        dow_full_emb = self.day_in_week_emb[(input[:,:, :,2] * 7).type(torch.LongTensor)]
         if self.corvar_dim >1:
             day_in_month_emb = self.day_in_month_emb[(input[:, -1:, :,3] * 31).type(torch.LongTensor)]
             month_in_year_emb = self.month_in_year_emb[(input[:, -1:, :,4] * 12).type(torch.LongTensor)]
@@ -132,15 +135,30 @@ class MoNet(BaseModel):
         tem_emb.append(time_in_day_emb.transpose(1, 3))
         tem_emb.append(day_in_week_emb.transpose(1, 3))
 
+
+        tem_full_emb = []
+        tem_full_emb.append(tod_full_emb.transpose(1, 3))
+        tem_full_emb.append(dow_full_emb.transpose(1, 3))
+
         if self.corvar_dim >1:
             tem_emb.append(day_in_month_emb.transpose(1, 3))
             tem_emb.append(month_in_year_emb.transpose(1, 3))
 
         # concate all embeddings
         hidden = torch.cat([time_series_emb] + node_emb + tem_emb, dim=1)
+
+        # list -> tensor（在通道维拼接）; 保持 dtype/device 一致
+        tem_full_emb = torch.cat(
+            [x.to(device=time_series_emb.device, dtype=time_series_emb.dtype)
+             for x in tem_full_emb],
+            dim=1,  # [B, C_tem, N, T]
+        ).mean(dim=2)
+
+
+
         #b,emd*4,nodes,feat,
         #b,feat,nodes,seq_len
-        return hidden.view(batch_size, self.hidden_dim,num_nodes,-1),hidden
+        return hidden.view(batch_size, self.hidden_dim,num_nodes,-1),tem_full_emb
     def embedding(self,input,time):
         tod = self.tod_embedding(time[:,:,:,0:1])
         dow = self.dow_embedding(time[:, :, :, 1:2])
@@ -159,18 +177,18 @@ class MoNet(BaseModel):
         time = input[:,:,:,self.fea_dim:]
 
         #X = self.embedding(fea,time)
+        mix_X,time_feats = self.STIDemd(torch.concat([fea,time],dim=-1))
         #b,feat,nodes,len x_phy:b,n,l,f
-        X_phy = self.Field(fea.transpose(1,2),self.eigvecs,self.eigval).transpose(1,2)
-        # mix_X,_ = self.STIDemd(torch.concat([fea,time],dim=-1))
-        # X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,len).transpose(1,3)
-        # x_res = self.res_layer(mix_X)
-        # if self.corvar_dim > 0:
-        #     convar = input[:,:,:,1:self.corvar_dim+1]
-        #     x_side = self.side_encoding(convar.reshape(batch,-1,nodes,1))
-        #     x_side = x_side.reshape(batch,len,nodes,-1)
-        #     #x_res = x_res + x_side
-        #     y_hat = self.output_fusion(torch.cat((X_phy,X_exdif,x_side),dim=-1))+self.activation(x_res)
-        # else:
-        #     y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
-        return X_phy
+        X_phy = self.Field(fea.transpose(1,2),self.eigvecs,self.eigval,time_feats).transpose(1,2)
+        X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,len).transpose(1,3)
+        x_res = self.res_layer(mix_X)
+        if self.corvar_dim > 0:
+            convar = input[:,:,:,1:self.corvar_dim+1]
+            x_side = self.side_encoding(convar.reshape(batch,-1,nodes,1))
+            x_side = x_side.reshape(batch,len,nodes,-1)
+            #x_res = x_res + x_side
+            y_hat = self.output_fusion(torch.cat((X_phy,X_exdif,x_side),dim=-1))+self.activation(x_res)
+        else:
+            y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))+self.activation(x_res)
+        return y_hat
 
