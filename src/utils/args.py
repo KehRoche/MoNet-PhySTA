@@ -5,7 +5,7 @@ def get_public_config():
     parser.add_argument('--device', type=str, default='cuda:0')
     #parser.add_argument('--dataset', type=str, default='')
     parser.add_argument('--years', type=str, default='2017')
-    parser.add_argument('--model_name', type=str, default='')
+    parser.add_argument('--model_name', type=str, default='monet')
     parser.add_argument('--seed', type=int, default=2023)
 
     parser.add_argument('--bs', type=int, default=4)

@@ -4,6 +4,7 @@ import torch
 import numpy as np
 import threading
 import multiprocessing as mp
+from pathlib import Path
 
 class DataLoader(object):
     def __init__(self, data, idx, seq_len, horizon, bs, logger, pad_last_sample=False):
@@ -56,7 +57,7 @@ class DataLoader(object):
                 y = np.frombuffer(y_shared, dtype='f').reshape(y_shape)
 
                 array_size = len(idx_ind)
-                num_threads = len(idx_ind) // 2
+                num_threads = max(1, len(idx_ind) // 2)
                 chunk_size = array_size // num_threads
                 threads = []
                 for i in range(num_threads):
@@ -141,16 +142,17 @@ def load_adj_from_numpy(numpy_file):
 
 
 def get_dataset_info(dataset):
-    base_dir = os.path.dirname(os.path.dirname(os.getcwd())) + '/data/'
+    base_dir = Path(__file__).resolve().parents[2] / 'data'
     d = {
-         'CA': [base_dir+'ca', base_dir+'ca/ca_rn_adj.npy', 8600],
-         'GLA': [base_dir+'gla', base_dir+'gla/gla_rn_adj.npy', 3834],
-         'GBA': [base_dir+'gba', base_dir+'gba/gba_rn_adj.npy', 2352],
-         'SD': [base_dir+'sd', base_dir+'sd/sd_rn_adj.npy', 716],
-         'PEMS-BAY': [base_dir+'PEMS-BAY',base_dir+'PEMS-BAY/adj_mx_bay.pkl',325],
-         'PEMS08': [base_dir + 'PEMS08', base_dir + 'PEMS08/adj_mx_08_distance.npy', 170],
-         'KnowAir': [base_dir + 'KnowAir', base_dir + 'KnowAir/adj_matrix.npy', 184],
-         'BJAir': [base_dir + 'BJAir', base_dir + 'BJAir/BJAir.npy', 35]
+         'CA': [base_dir / 'ca', base_dir / 'ca' / 'ca_rn_adj.npy', 8600],
+         'GLA': [base_dir / 'gla', base_dir / 'gla' / 'gla_rn_adj.npy', 3834],
+         'GBA': [base_dir / 'gba', base_dir / 'gba' / 'gba_rn_adj.npy', 2352],
+         'SD': [base_dir / 'sd', base_dir / 'sd' / 'sd_rn_adj.npy', 716],
+         'PEMS-BAY': [base_dir / 'PEMS-BAY', base_dir / 'PEMS-BAY' / 'adj_mx_bay.pkl', 325],
+         'PEMS08': [base_dir / 'PEMS08', base_dir / 'PEMS08' / 'adj_mx_08_distance.npy', 170],
+         'KnowAir': [base_dir / 'KnowAir', base_dir / 'KnowAir' / 'adj_matrix.npy', 184],
+         'BJAir': [base_dir / 'BJAir', base_dir / 'BJAir' / 'BJAir.npy', 35]
     }
     assert dataset in d.keys()
-    return d[dataset]
+    data_path, adj_path, node_num = d[dataset]
+    return str(data_path), str(adj_path), node_num

@@ -1,0 +1,61 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Environments
+.venv/
+venv/
+env/
+conda-env/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Experiment outputs
+eval/
+exp_vis/
+screenshots/
+experiments/monet/tgssp_analysis/
+experiments/monet/tgssp_analysis_alpha/
+experiments/monet/tgssp_trace/
+experiments/monet/tgssp_viz/
+*.log
+*.html
+*.png
+*.pt
+*.pth
+*.ckpt
+
+# Large datasets and generated arrays
+*.h5
+*.mat
+*.nc
+*.npz
+*.npy
+*.pkl
+*.zip
+data/**/*
+!data/**/
+!data/**/generate_*.py
+!data/generate_data_for_training.py
+
+# Local notebooks / exploratory artifacts
+*.ipynb_checkpoints/
+MSGKN_vis.ipynb
+Spectrum&Frequency_Vis.ipynb
+no2.ipynb
+prfno-anlay.ipynb
+
+# Local experiment launchers / exploratory scripts
+experiments/monet/abl.py
+experiments/monet/alpha_vis.py
+experiments/monet/gata_vis.py
+experiments/monet/run_exp.py
+experiments/monet/vis_tgssp.py
