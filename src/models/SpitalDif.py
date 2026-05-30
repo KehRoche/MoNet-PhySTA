@@ -14,7 +14,7 @@ from torch_geometric.utils import dense_to_sparse
 from torch_scatter import scatter
 
 class MSKGN(nn.Module):
-    def __init__(self, hidden_channels: int, levels: int, adj_matrix, topk: int = 5):
+    def __init__(self, len,hidden_channels: int, levels: int, adj_matrix, topk: int = 5):
         """
         Multi-Scale Kernel Graph Network
         Args:

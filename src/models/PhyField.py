@@ -2,6 +2,10 @@ import numpy as np
 import torch
 import torch.nn as nn
 from sympy.abc import alpha
+from einops import rearrange
+from typing import List
+
+
 import torch.nn.functional as F
 import math
 import random
@@ -208,270 +212,6 @@ class SpectralFilter(nn.Module):
         out = z_out.view(B, M, T, self.C_out)
         return out
 
-# -------------------------
-# Spectral Block: complex linear mapping + skip (mode-wise)
-# -------------------------
-
-class SimpleSpectralBlock(nn.Module):
-    """
-    A single spectral block that maps complex features -> complex features,
-    with a residual connection. It acts per (mode,k) and time, but weights are shared.
-    Input: z [B, K, T, C]
-    """
-    def __init__(self, channels: int, hidden: int, activation=nn.GELU()):
-        super().__init__()
-        self.lin1 = ComplexLinear(channels, hidden)
-        self.lin2 = ComplexLinear(hidden, channels)
-        self.act = activation
-
-    def forward(self, z: torch.Tensor):
-        # z complex [B,K,T,C]
-        B, K, T, C = z.shape
-        x = self.lin1(z.reshape(-1, C))  # complex
-        x = complex_activation_mod(x.view(B, K, T, -1), self.act)
-        x = self.lin2(x.reshape(-1, x.shape[-1])).view(B, K, T, C)
-        return x + z  # residual
-
-
-
-
-class SpectralBlock(nn.Module):
-    """
-    SpectralBlock with soft gating + diagnostics.
-    """
-    def __init__(self,
-                 channels: int,
-                 hidden: int,
-                 activation=nn.GELU(),
-                 filters: Optional[List[nn.Module]] = None,
-                 gate_hidden: int = 16,
-                 ema_momentum: float = 0.9,
-                 eps: float = 1e-8,
-                 enable_diag: bool = True):
-        super().__init__()
-        self.channels = channels
-        self.hidden = hidden
-        self.act = activation
-        self.eps = float(eps)
-        self.ema_momentum = float(ema_momentum)
-        self.enable_diag = enable_diag
-
-        # two-layer complex MLP (residual path)
-        self.lin1 = ComplexLinear(channels, hidden)
-        self.lin2 = ComplexLinear(hidden, channels)
-
-        # default 4 filters
-        if filters is None:
-            self.filters = nn.ModuleList([
-                SpectralFilter(channels, channels),
-                SpectralFilter(channels, channels),
-                SpectralFilter(channels, channels),
-                SpectralFilter(channels, channels),
-            ])
-        else:
-            assert len(filters) == 4
-            self.filters = nn.ModuleList(filters)
-
-        # gate MLP: [lambda_norm, elog_norm] -> 4 logits
-        self.gate_net = nn.Sequential(
-            nn.Linear(2, gate_hidden, bias=True),
-            nn.ReLU(),
-            nn.Linear(gate_hidden, 4, bias=True),
-        )
-
-    def _ensure_ema_buffer(self, K: int, device, dtype):
-        if not hasattr(self, 'ema_energy_buf'):
-            buf = torch.zeros(K, dtype=torch.float32, device=device)
-            self.register_buffer('ema_energy_buf', buf)
-            return True
-        else:
-            existing = getattr(self, 'ema_energy_buf')
-            if existing.numel() != K:
-                delattr(self, 'ema_energy_buf')
-                buf = torch.zeros(K, dtype=torch.float32, device=device)
-                self.register_buffer('ema_energy_buf', buf)
-                return True
-        return False
-
-    def forward(self, z: torch.Tensor, lambdas: torch.Tensor, baseline: Optional[torch.Tensor] = None):
-        """
-        z: complex [B, K, T, C]
-        lambdas: real [K]
-        baseline: optional tensor for spectral error diag (same shape as z)
-        """
-        if not torch.is_complex(z):
-            raise ValueError("SpectralBlock expects complex input")
-        if lambdas is None:
-            raise ValueError("SpectralBlock requires lambdas")
-
-        B, K, T, C = z.shape
-        device = z.device
-        diagnostics = {} if self.enable_diag else None
-
-        # 1) per-mode energy
-        energy = (z.abs() ** 2).sum(dim=(0, 2, 3)).to(dtype=torch.float32, device=device)  # [K]
-        elog = torch.log(energy + self.eps)
-
-        # 2) EMA update
-        first_init = self._ensure_ema_buffer(K, device, torch.float32)
-        if first_init:
-            self.ema_energy_buf.copy_(elog.detach())
-        else:
-            m = self.ema_momentum
-            self.ema_energy_buf.mul_(m).add_((1.0 - m) * elog.detach())
-        elog_smooth = self.ema_energy_buf  # [K]
-
-        # 3) norm lambdas & elog
-        lambdas = lambdas.to(device=device, dtype=torch.float32)
-        lambda_norm = (lambdas - lambdas.mean()) / (lambdas.std(unbiased=False) + 1e-6)
-        elog_norm = (elog_smooth - elog_smooth.mean()) / (elog_smooth.std(unbiased=False) + 1e-6)
-
-        # 4) gate -> [K,4]
-        gate_in = torch.stack([lambda_norm, elog_norm], dim=-1)  # [K,2]
-        gates_logits = self.gate_net(gate_in)
-        gates = F.softmax(gates_logits, dim=-1)  # [K,4]
-
-        # ========== Diagnostics ==========
-        if diagnostics is not None:
-            diagnostics["gates_mean"] = gates.mean(dim=0).detach().cpu()   # [4]
-            diagnostics["gates_std"]  = gates.std(dim=0).detach().cpu()    # [4]
-            diagnostics["energy_batch"] = energy.detach().cpu()
-            diagnostics["elog"] = elog.detach().cpu()
-            diagnostics["elog_ema"] = elog_smooth.detach().cpu()
-
-        # 5) apply 4 filters
-        outs = [filt(z) for filt in self.filters]  # list of [B,K,T,C]
-        w = [gates[:, i].view(1, K, 1, 1) for i in range(4)]
-        y = sum(out * wi for out, wi in zip(outs, w))  # [B,K,T,C]
-
-        # 6) complex MLP
-        x = self.lin1(y.reshape(-1, C))
-        x = complex_activation_mod(x, self.act)
-        x = self.lin2(x).view(B, K, T, C)
-
-        # 7) residual
-        out = x + z
-
-        # ========== More Diagnostics ==========
-        if diagnostics is not None:
-            # gradient norm of filters
-            grad_norms = []
-            for i, filt in enumerate(self.filters):
-                if hasattr(filt, "weight") and filt.weight.grad is not None:
-                    grad_norms.append(filt.weight.grad.norm().item())
-            if grad_norms:
-                diagnostics["W_filter_grad_norm_avg"] = sum(grad_norms)/len(grad_norms)
-
-            # spectral reconstruction error
-            if baseline is not None:
-                err = torch.mean(torch.abs(y - baseline)**2).item()
-                diagnostics["spec_L2_err"] = err
-
-        return (out, diagnostics) if self.enable_diag else out
-
-
-
-# class SpecGraphFreqNet(nn.Module):
-#     def __init__(self,
-#                  in_channels, hidden_dim,
-#                  energy_splits=(0.8,0.95),
-#                  gate_hidden=16):
-#         super().__init__()
-#         self.F_in      = in_channels
-#         self.hidden_dim= hidden_dim
-#         self.low_cut, self.mid_cut = energy_splits
-#
-#         # 四段独立滤波器
-#         self.filter_high = SpectralFilter(in_channels, hidden_dim)
-#         self.filter_mid  = SpectralFilter(in_channels, hidden_dim)
-#         self.filter_low  = SpectralFilter(in_channels, hidden_dim)
-#         self.filter_neg  = SpectralFilter(in_channels, hidden_dim)
-#
-#         # 复合门控网络：基于每个 lambda 值生成四段权重
-#         # 输入维度 1 → 隐藏 → 输出 4 → softmax 得到 [w_high, w_mid, w_low, w_neg]
-#         self.gate_net = nn.Sequential(
-#             nn.Linear(1, gate_hidden, bias=True),
-#             nn.ReLU(),
-#             nn.Linear(gate_hidden, 4, bias=True),
-#         )
-#
-#         # 最终融合投影回时域特征
-#         self.proj = nn.Linear(hidden_dim, in_channels)
-#
-#     def forward(self, x, eigvecs, lambdas):
-#         """
-#         x: [B, N, T, F_in]
-#         eigvecs: [N, K] or complex
-#         lambdas: [K]   频谱索引对应的特征
-#         """
-#         B, N, T,_ = x.shape
-#         device = x.device
-#
-#         # 1. GFT + FFT → x_spec [B, K, T, F]
-#         if torch.is_complex(eigvecs):
-#             x_gft = torch.einsum('bntf, nk -> bktf',
-#                                  x.to(dtype=torch.complex64),
-#                                  eigvecs.conj())
-#         else:
-#             x_gft = torch.einsum('bntf, nk -> bktf', x, eigvecs)
-#         x_spec = torch.fft.fft(x_gft, dim=2)
-#
-#         # 2. 计算能量并拆分索引（保留用于可视化或对比）
-#         energy = (x_spec.abs()**2).sum(dim=(0,2,3))  # [K]
-#         neg_mask = lambdas < 0
-#         pos_idxs = (~neg_mask).nonzero().squeeze()
-#         pos_sorted = pos_idxs[energy[pos_idxs].argsort(descending=True)]
-#         k_pos = pos_sorted.numel()
-#         cut1, cut2 = int(self.low_cut*k_pos), int(self.mid_cut*k_pos)
-#         high_idx = pos_sorted[:cut1]
-#         mid_idx  = pos_sorted[cut1:cut2]
-#         low_idx  = pos_sorted[cut2:]
-#         neg_idx = (lambdas < 0).nonzero(as_tuple=False).flatten()
-#
-#         # 3. 软门控权重：每个频谱 lambda 都有一个四段权重
-#         lam = lambdas.view(-1,1)                            # [K,1]
-#         gates = self.gate_net(lam)                          # [K,4]
-#         gates = F.softmax(gates, dim=-1)                    # [K,4]
-#         w_high, w_mid, w_low, w_neg = gates.unbind(-1)      # 各自 [K]
-#
-#         # 4. 按段分别应用滤波器，乘以对应 gate 权重后累加
-#         # 初始化 y_spec
-#         K = x_spec.shape[1]
-#         y_spec = torch.zeros([B, K, T, self.hidden_dim], device=x_spec.device, dtype=x_spec.dtype)
-#         # 对每一段做变换并加权
-#         if len(high_idx)>0:
-#             seg = x_spec[:, high_idx]                        # [B, Mh, T, F]
-#             out = self.filter_high(seg)                      # [B, Mh, T, hidden_dim]
-#             y_spec[:, high_idx] += out * w_high[high_idx].view(1,-1,1,1)
-#
-#         if len(mid_idx)>0:
-#             seg = x_spec[:, mid_idx]
-#             out = self.filter_mid(seg)
-#             y_spec[:, mid_idx] += out * w_mid[mid_idx].view(1,-1,1,1)
-#
-#         if len(low_idx)>0:
-#             seg = x_spec[:, low_idx]
-#             out = self.filter_low(seg)
-#             y_spec[:, low_idx] += out * w_low[low_idx].view(1,-1,1,1)
-#
-#         if len(neg_idx)>0:
-#             seg = x_spec[:, neg_idx]
-#             out = self.filter_neg(seg)
-#             y_spec[:, neg_idx] += out * w_neg[neg_idx].view(1,-1,1,1)
-#
-#         # 5. IFFT + IGFT → 回到时域
-#         y_ifft = torch.fft.ifft(y_spec, dim=2)
-#         if not torch.is_complex(eigvecs):
-#             y_ifft = y_ifft.real
-#
-#         y_rec = torch.einsum('bktf, nk -> bntf', y_ifft, eigvecs)
-#         # 6. 最后投影到输入维度并残差连接
-#         y_out = self.proj(y_rec.real)
-#
-#         return y_out
-#
-#
-
 class SpectralConvS(SpectralConv):
     def __init__(
         self,
@@ -612,7 +352,7 @@ class SpectralConvT(SpectralConvS):
             if torch.is_complex(eig):
                 y_back = torch.einsum('bktc,nk->bntc', y_time, eig).real
             else:
-                y_back = torch.einsum('bktc,nk->bntc', y_time, eig)
+                y_back = torch.einsum('bktc,nk->bntc', y_time.real, eig)
                 if torch.is_complex(y_back):
                     y_back = y_back.real
 
@@ -641,275 +381,272 @@ class SpectralConvT(SpectralConvS):
         return v
 
 
+#--------------TGSSP-----------------------
 # class GraphSpectralConvS(nn.Module):
 #     """
-#     Simplified frequency-only spectral conv with:
-#       - low_k per-mode independent weights (selected by energy / CV stability)
-#       - rest modes share one kernel
-#       - time gate g(t) mixes low vs rest
-#       - conditional event gate for high-CV modes
-#       - optional participation-ratio (PR) localization factor if eigvecs provided
-#     Interface:
-#       spectral_conv(vh, kx, kt, eigvals=None, eigvecs=None, time_feats=None,
-#                     cv_windows=4, cv_thresh=0.5, pr_scale=1.0)
-#     Inputs:
-#       vh: complex tensor (B, Cin, K, T)
-#       eigvecs: optional (N, K) complex/real for PR
-#       time_feats: optional (Tsel, feat) or (B, Tsel, feat)
-#     Returns:
-#       complex tensor (B, Cout, K, Tsel)
+#     Modified: low_k keeps per-mode independent weights (mode_n).
+#     mid/high each have:
+#       - a shared kernel (w_mid / w_high)
+#       - a per-mode non-negative alpha vector, stored only for mid_k / high_k (fixed sizes)
+#     forward 兼容老签名，但真正的运算在 spectral_conv 里。
 #     """
-#     def __init__(self, in_channels, out_channels, K, modes_t,
-#                  low_k=16, bias=False, device=None, dtype=torch.float32):
+#     def __init__(self, in_channels, out_channels, N, modes_t,
+#                  energy_splits,
+#                  time_feat_dim: int = 8, bias=False, device=None, dtype=torch.float32):
 #         super().__init__()
 #         self.Cin = in_channels
 #         self.Cout = out_channels
-#         self.K = int(K)
+#         self.K = int(N)
 #         self.modes_t = int(modes_t)
-#         self.low_k = int(low_k)
 #         self.device = device
 #         self.dtype = dtype
-#
-#         # per-low-mode complex weights stored as real/imag last dim=2
-#         self.w_low = nn.Parameter(torch.randn(in_channels, out_channels, max(1, self.low_k), self.modes_t, 2, dtype=dtype, device=device) * 0.02)
-#         # single shared kernel for rest modes (Cin, Cout, T, 2)
-#         self.w_rest = nn.Parameter(torch.randn(in_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02)
-#
-#         if bias:
-#             self.b_low = nn.Parameter(torch.randn(out_channels, max(1, self.low_k), self.modes_t, 2, dtype=dtype, device=device) * 0.01)
-#             self.b_rest = nn.Parameter(torch.randn(out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.01)
+# 
+#         s0, s1 = float(energy_splits[0]), float(energy_splits[1])
+#         # low_k is at least 1 if K>=1.
+#         low_k = max(1, int(round(s0 * self.K)))
+#         # middle part count from fractional interval (s1 - s0)
+#         mid_k = int(round((s1 - s0) * self.K))
+#         # remaining goes to high
+#         high_k = max(0, self.K - low_k - mid_k)
+# 
+#         # store as attributes for later use
+#         self.low_k = int(low_k)
+#         self.mid_k = int(mid_k)
+#         self.high_k = int(high_k)
+# 
+# 
+#         # --- low per-mode independent slots (size = low_k) ---
+#         self.w_low = nn.Parameter(
+#             torch.randn(out_channels, out_channels, max(1, self.low_k), self.modes_t, 2,
+#                         dtype=dtype, device=device) * 0.02
+#         )
+#         # --- shared kernels for neg / mid / high (each independent) ---
+#         self.w_neg = nn.Parameter(
+#             torch.randn(out_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
+#         )
+#         self.w_mid = nn.Parameter(
+#             torch.randn(out_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
+#         )
+#         self.w_high = nn.Parameter(
+#             torch.randn(out_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
+#         )
+# 
+# 
+#         # --- store per-band alphas only for mid_k / high_k (non-negative via softplus) ---
+#         if self.mid_k > 0:
+#             init_mid = 0.1
+#             alpha_mid_raw = torch.full((self.mid_k,), init_mid, dtype=dtype, device=device)
+#             self.alpha_mid_raw = nn.Parameter(alpha_mid_raw)
 #         else:
-#             self.b_low = None
-#             self.b_rest = None
-#
-#         # Gate MLP for g(t) (time features -> scalar per time step)
-#         self.gate_mlp = nn.Sequential(nn.Linear(4, 32), nn.ReLU(), nn.Linear(32, 1))
-#         nn.init.constant_(self.gate_mlp[-1].bias, 1.0)  # bias to prefer low initially
-#
-#         # Event gate for high-CV modes (separate small MLP)
-#         self.event_mlp = nn.Sequential(nn.Linear(4, 16), nn.ReLU(), nn.Linear(16, 1))
-#         # PR scale: how strongly to amplify localized modes (multiplier factor)
-#         self.register_buffer('pr_scale', torch.tensor(1.0, dtype=torch.float32, device=device))
-#
+#             self.alpha_mid_raw = None
+#         if self.high_k > 0:
+#             init_high = 0.1
+#             alpha_high_raw = torch.full((self.high_k,), init_high, dtype=dtype, device=device)
+#             self.alpha_high_raw = nn.Parameter(alpha_high_raw)
+#         else:
+#             self.alpha_high_raw = None
+# 
+#         if bias:
+#             self.b_modes = nn.Parameter(torch.zeros(out_channels, self.K, self.modes_t, 2, dtype=dtype, device=device))
+#         else:
+#             self.b_modes = None
+# 
+#         # gate MLP: outputs 4 values per time step (neg, low, mid, high)
+#         self.gate_mlp = nn.Sequential(
+#             nn.Linear(self.Cin*2, 16),
+#             nn.ReLU(),
+#             nn.Linear(16, self.Cout)
+#         )
+# 
 #     @staticmethod
 #     def _to_complex(realimag):
 #         return torch.view_as_complex(realimag)
-#
-#     @staticmethod
-#     def _cmatmul(v, W):
-#         # v: (B, Cin, M, T), W: (Cin, Cout, T) complex -> (B, Cout, M, T) complex
-#         return torch.einsum('b c m t, c o t -> b o m t', v, W)
-#
-#     def spectral_conv(self, vh, kx: int, kt: int,
-#                       eigvals: torch.Tensor = None,
-#                       eigvecs: torch.Tensor = None,
-#                       time_feats: torch.Tensor = None,
-#                       cv_windows: int = 4,
-#                       cv_thresh: float = 0.5,
-#                       pr_scale: float = 1.0):
+# 
+#     # === 核心频域卷积（供 S/T 共用） ===
+#     def spectral_conv(self, vh: torch.Tensor, eigvals: torch.Tensor, time_feats: Optional[torch.Tensor] = None):
 #         """
-#         Main forward for frequency-only conv.
-#         Keeps code concise and vectorized.
+#         vh: (B, Cin, K, T) complex (already in spectral domain)
+#         eigvals: (K,) real, to split bands
+#         time_feats: (B, T, F_time) or None
+#         return: (B, Cout, K, Tsel) complex
 #         """
-#         assert vh.dtype in (torch.complex64, torch.complex128), "vh must be complex"
-#         B, Cin, K, T = vh.shape
+#         B, Cin, K_in, T = vh.shape
+#         assert K_in == self.K, f"vh K={K_in} must match init K={self.K}"
 #         device = vh.device
-#         Tsel = min(kt, self.modes_t, T)
-#
-#         # --- compute per-mode energy and windowed CV score ---
-#         vh_T = vh[..., :Tsel]  # (B,Cin,K,Tsel)
-#         energy = (vh_T.abs() ** 2).sum(dim=(0,1,3))  # (K,)
-#         energy_max = energy.max().clamp_min(1e-12)
-#
-#         # compute CV across cv_windows along time axis (split Tsel into windows)
-#         W = min(int(cv_windows), max(1, Tsel))
-#         wlen = max(1, Tsel // W)
-#         # pad if needed to make W*wlen >= Tsel
-#         pad = W * wlen - Tsel
-#         if pad > 0:
-#             vh_pad = torch.cat([vh_T, torch.zeros(B, Cin, K, pad, dtype=vh_T.dtype, device=device)], dim=-1)
-#         else:
-#             vh_pad = vh_T
-#         vh_windows = vh_pad.view(B, Cin, K, W, wlen)  # (B,C,K,W,wlen)
-#         E_w = (vh_windows.abs() ** 2).sum(dim=(0,1,4))  # (K, W)
-#         E_w = E_w.permute(1,0)  # (W,K)
-#         mean_E = E_w.mean(dim=0).clamp_min(1e-12)  # (K,)
-#         std_E = E_w.std(dim=0, unbiased=False)
-#         cv = (std_E / mean_E)  # (K,)
-#
-#         # score combine energy and stability: prefer high energy & low CV
-#         score = energy / (1.0 + cv)  # (K,)
-#         _, idx_by_score = torch.sort(score, descending=True)
-#
-#         low_k = min(self.low_k, K)
-#         low_idx = idx_by_score[:low_k]
-#         rest_idx = idx_by_score[low_k:]
-#
-#         # --- optional participation ratio (PR) from eigvecs for localization handling ---
-#         loc_factor = torch.ones(K, device=device, dtype=vh_T.real.dtype)  # default 1
-#         if eigvecs is not None:
-#             # eigvecs shape (N, K) real or complex
-#             U = eigvecs.to(device)
-#             if torch.is_complex(U) is False:
-#                 U = U.to(dtype=torch.get_default_dtype())
-#             # participation ratio per mode: PR = (sum |u|^2)^2 / sum |u|^4; normalized by N
-#             abs2 = (U * U.conj()).abs()  # (N,K)
-#             sum1 = abs2.sum(dim=0)  # (K,)
-#             sum2 = (abs2 * abs2).sum(dim=0)  # (K,)
-#             pr = (sum1 * sum1) / (sum2 + 1e-12)  # (K,)
-#             pr_norm = pr / max(1.0, U.shape[0])  # in (0,1], small => localized
-#             # localized modes get factor >1 to amplify; scale controlled by pr_scale param
-#             loc_factor = 1.0 + (1.0 - pr_norm) * float(pr_scale)  # (K,)
-#
-#         # --- prepare slices & complex weights ---
-#         vh_slice = vh_T  # (B,C,K,Tsel)
-#         def slice_v(idx):
-#             return vh_slice[..., idx, :] if idx.numel() > 0 else None
-#
-#         vh_low = slice_v(low_idx)
-#         vh_rest = slice_v(rest_idx)
-#
-#         W_low_c = self._to_complex(self.w_low[..., :Tsel])   # (Cin, Cout, low_k, Tsel)
-#         W_rest_c = self._to_complex(self.w_rest[..., :Tsel]) # (Cin, Cout, Tsel)
-#
-#         # --- compute outputs ---
-#         out = torch.zeros(B, self.Cout, K, Tsel, dtype=vh.dtype, device=device)
-#
-#         # low per-mode
+#         Tsel = min(T, self.modes_t)
+# 
+#         eigvals = eigvals.to(device)
+#         neg_idx = torch.nonzero(eigvals < 0, as_tuple=False).squeeze(-1)
+#         pos_idx = torch.nonzero(eigvals >= 0, as_tuple=False).squeeze(-1)
+# 
+#         # positive bands split: low / mid / high
+#         n_pos = pos_idx.numel()
+#         n_low = min(self.low_k, n_pos)
+#         rem = max(0, n_pos - n_low)
+#         desired_mid = min(self.mid_k, rem)
+#         desired_high = rem - desired_mid
+# 
+#         def clamp(idx):
+#             if idx.numel() == 0:
+#                 return idx
+#             return idx[(idx >= 0) & (idx < self.K)]
+# 
+#         low_idx  = clamp(pos_idx[:n_low]) if n_low > 0 else torch.empty(0, dtype=torch.long, device=device)
+#         mid_idx  = clamp(pos_idx[n_low:n_low + desired_mid]) if desired_mid > 0 else torch.empty(0, dtype=torch.long, device=device)
+#         high_idx = clamp(pos_idx[n_low + desired_mid:n_low + desired_high + desired_mid]) if desired_high > 0 else torch.empty(0, dtype=torch.long, device=device)
+#         neg_idx  = clamp(neg_idx)
+# 
+#         out = torch.zeros(B, self.Cout, self.K, Tsel, dtype=vh.dtype, device=device)
+# 
+#         W_low_c  = self._to_complex(self.w_low[..., :Tsel])   # (Cin, Cout, low_k, Tsel)
+#         W_neg_c  = self._to_complex(self.w_neg[..., :Tsel])   # (Cin, Cout, Tsel)
+#         W_mid_c  = self._to_complex(self.w_mid[..., :Tsel])   # (Cin, Cout, Tsel)
+#         W_high_c = self._to_complex(self.w_high[..., :Tsel])  # (Cin, Cout, Tsel)
+#         b_c = self._to_complex(self.b_modes[..., :Tsel]) if self.b_modes is not None else None
+# 
+#         # NEG band
+#         if neg_idx.numel() > 0:
+#             vh_neg = vh[:, :, neg_idx, :Tsel]
+#             out_neg = torch.einsum('b c m t, c o t -> b o m t', vh_neg, W_neg_c)
+#             out[:, :, neg_idx, :] = out_neg
+#             if b_c is not None:
+#                 out[:, :, neg_idx, :] += b_c[None, :, neg_idx, :]
+# 
+#         # LOW band
 #         if low_idx.numel() > 0:
-#             Wl = W_low_c.permute(2,0,1,3).contiguous()  # (low_k, Cin, Cout, Tsel)
-#             out_low = torch.einsum('b c m t, m c o t -> b o m t', vh_low, Wl)  # (B,Cout,low_k,T)
+#             vh_low = vh[:, :, low_idx, :Tsel]
+#             m_low = low_idx.numel()
+#             Wl_sel = W_low_c[..., :m_low, :]
+#             Wl_perm = Wl_sel.permute(2,0,1,3).contiguous()
+#             out_low = torch.einsum('b c m t, m c o t -> b o m t', vh_low, Wl_perm)
 #             out[:, :, low_idx, :] = out_low
-#             if self.b_low is not None:
-#                 out[:, :, low_idx, :] += self._to_complex(self.b_low[..., :Tsel])[None, :, :, :]
-#
-#         # rest shared
-#         if rest_idx.numel() > 0:
-#             out_rest = self._cmatmul(vh_rest, W_rest_c)  # (B,Cout, M_rest, T)
-#             out[:, :, rest_idx, :] = out_rest
-#             if self.b_rest is not None:
-#                 out[:, :, rest_idx, :] += self._to_complex(self.b_rest[..., :Tsel])[None, :, None, :]
-#
-#         # --- apply localization factor (for all modes) ---
-#         # loc_factor shape (K,) real; expand to complex multiplier
-#         lf = loc_factor.view(1,1,-1,1).to(out.real.dtype)
-#         out = out * lf  # broadcast: amplify localized modes
-#
-#         # --- conditional event gate for high-CV modes ---
-#         # identify high-CV modes (cv > cv_thresh)
-#         high_cv_mask = (cv > cv_thresh)
-#         high_cv_idx = torch.nonzero(high_cv_mask, as_tuple=False).squeeze(1) if high_cv_mask.any() else torch.empty(0, dtype=torch.long, device=device)
-#         if high_cv_idx.numel() > 0:
-#             # build time_feats default if None
-#             if time_feats is None:
-#                 t_idx = torch.arange(Tsel, device=device).float()
-#                 sin_t = torch.sin(2*torch.pi * t_idx / max(1, Tsel)).unsqueeze(-1)
-#                 cos_t = torch.cos(2*torch.pi * t_idx / max(1, Tsel)).unsqueeze(-1)
-#                 hf_ratio = (energy[~torch.isin(torch.arange(K, device=device), low_idx)].sum() / energy.sum()).item()
-#                 hf_feat = torch.full((Tsel,1), hf_ratio, device=device)
-#                 event_flag = torch.zeros((Tsel,1), device=device)
-#                 tf = torch.cat([sin_t, cos_t, hf_feat, event_flag], dim=1)  # (Tsel,4)
+#             if b_c is not None:
+#                 out[:, :, low_idx, :] += b_c[None, :, low_idx, :]
+# 
+#         # MID band
+#         if mid_idx.numel() > 0:
+#             vh_mid = vh[:, :, mid_idx, :Tsel]
+#             out_mid = torch.einsum('b c m t, c o t -> b o m t', vh_mid, W_mid_c)
+#             if self.alpha_mid_raw is not None:
+#                 alpha_mid = F.softplus(self.alpha_mid_raw)
+#                 a_mid = alpha_mid[: mid_idx.numel()].view(1, 1, -1, 1)
 #             else:
-#                 if time_feats.dim() == 2:
-#                     tf = time_feats
-#                 elif time_feats.dim() == 3:
-#                     tf = time_feats.mean(dim=0)
-#                 else:
-#                     raise ValueError("time_feats must be (Tsel,feat) or (B,Tsel,feat)")
-#             s = torch.sigmoid(self.event_mlp(tf).view(1,1,1,Tsel))  # (1,1,1,Tsel)
-#             # apply s(t) multiplicatively to high-CV modes (amplify when gate ~1)
-#             out[:, :, high_cv_idx, :] = out[:, :, high_cv_idx, :] * s
-#
-#         # --- time gate g(t) mixes low vs rest (scalar per time step) ---
-#         if time_feats is None:
-#             t_idx = torch.arange(Tsel, device=device).float()
-#             sin_t = torch.sin(2*torch.pi * t_idx / max(1, Tsel)).unsqueeze(-1)
-#             cos_t = torch.cos(2*torch.pi * t_idx / max(1, Tsel)).unsqueeze(-1)
-#             hf_ratio = (energy[~torch.isin(torch.arange(K, device=device), low_idx)].sum() / energy.sum()).item()
-#             hf_feat = torch.full((Tsel,1), hf_ratio, device=device)
-#             event_flag = torch.zeros((Tsel,1), device=device)
-#             tf_gate = torch.cat([sin_t, cos_t, hf_feat, event_flag], dim=1)  # (Tsel,4)
+#                 a_mid = torch.ones(1, 1, mid_idx.numel(), 1, device=device, dtype=vh.real.dtype)
+#             out[:, :, mid_idx, :] = out_mid * a_mid
+#             if b_c is not None:
+#                 out[:, :, mid_idx, :] += b_c[None, :, mid_idx, :]
+# 
+#         # HIGH band
+#         if high_idx.numel() > 0:
+#             vh_high = vh[:, :, high_idx, :Tsel]
+#             out_high = torch.einsum('b c m t, c o t -> b o m t', vh_high, W_high_c)
+#             if self.alpha_high_raw is not None:
+#                 alpha_high = F.softplus(self.alpha_high_raw)
+#                 a_high = alpha_high[: high_idx.numel()].view(1, 1, -1, 1)
+#             else:
+#                 a_high = torch.ones(1, 1, high_idx.numel(), 1, device=device, dtype=vh.real.dtype)
+#             out[:, :, high_idx, :] = out_high * a_high
+#             if b_c is not None:
+#                 out[:, :, high_idx, :] += b_c[None, :, high_idx, :]
+# 
+#         # time gate（若没给 time_feats，则退化为 1）
+#         if time_feats is not None:
+#             T_in = time_feats.size(1)
+#             t_use = min(Tsel, T_in)
+#             #B,T,C
+#             time_feats = time_feats[:, :, :t_use].transpose(1, 2)
+#             time_feats_reim = torch.cat([time_feats.real, time_feats.imag], dim=-1)  # (B, 2C, T)
+#             gate_raw = self.gate_mlp(time_feats_reim)
+#             gate = torch.sigmoid(gate_raw).permute(0, 2, 1).unsqueeze(2)  # (B,4,1,t_use)
+#             # 若 Tsel > t_use，用最后一个时间步的门控填充
+#             if t_use < Tsel:
+#                 last = gate[..., -1:].expand(-1, -1, -1, Tsel - t_use)
+#                 gate = torch.cat([gate, last], dim=-1)
 #         else:
-#             if time_feats.dim() == 2:
-#                 tf_gate = time_feats
-#             else:
-#                 tf_gate = time_feats.mean(dim=0)
+#             gate = torch.ones(vh.size(0), 4, 1, Tsel, device=device, dtype=vh.real.dtype)
+# 
+#         out_final = torch.zeros_like(out)
+#         def apply_gate(idx, chan):
+#             if idx.numel() == 0:
+#                 return
+#             m = idx.numel()
+#             g = gate[:, chan:chan+1, :, :].expand(-1, 1, m, -1)  # (B,1,m,Tsel)
+#             out_final[:, :, idx, :] = g * out[:, :, idx, :]
 #
-#         g = torch.sigmoid(self.gate_mlp(tf_gate).view(1,1,1,Tsel))  # (1,1,1,Tsel)
-#
-#         # split out into low/rest full tensors and mix
-#         out_low_full = torch.zeros_like(out)
-#         out_rest_full = torch.zeros_like(out)
-#         if low_idx.numel() > 0:
-#             out_low_full[:, :, low_idx, :] = out[:, :, low_idx, :]
-#         rest_mask = torch.ones(K, dtype=torch.bool, device=device)
-#         rest_mask[low_idx] = False
-#         rest_indices = torch.nonzero(rest_mask, as_tuple=False).squeeze(1) if rest_mask.any() else torch.empty(0, dtype=torch.long, device=device)
-#         if rest_indices.numel() > 0:
-#             out_rest_full[:, :, rest_indices, :] = out[:, :, rest_indices, :]
-#
-#         out_spec = g * out_low_full + (1.0 - g) * out_rest_full  # complex
-#
-#         return out_spec
+# 
+# 
+# 
+#         # 0/1/2/3 -> neg/low/mid/high
+#         apply_gate(neg_idx, 0)
+#         apply_gate(low_idx, 1)
+#         apply_gate(mid_idx, 2)
+#         apply_gate(high_idx, 3)
+#         return out_final
+#     # 兼容老调用：把参数转给 spectral_conv
+#     def forward(self, vh, eigvecs=None, eigvals=None, time_feats=None):
+#         assert eigvals is not None, "eigvals must be provided"
+#         return self.spectral_conv(vh, eigvals, time_feats)
+# 
+# 
 
 
-
+import os
+import io
+import json
+import time
+import tempfile
+from pathlib import Path
+from typing import Optional
 
 class GraphSpectralConvS(nn.Module):
-    """
-    Modified: low_k keeps per-mode independent weights (mode_n).
-    mid/high each have:
-      - a shared kernel (w_mid / w_high)
-      - a per-mode non-negative alpha vector, stored only for mid_k / high_k (fixed sizes)
-    forward 兼容老签名，但真正的运算在 spectral_conv 里。
-    """
-    def __init__(self, in_channels, out_channels, K, modes_t,
-                 low_k=16, mid_ratio=0.5, high_ratio=0.5,
-                 time_feat_dim: int = 8, bias=False, device=None, dtype=torch.float32):
+    def __init__(self, in_channels, out_channels, N, modes_t,
+                 energy_splits,
+                 time_feat_dim: int = 8, bias=False, device=None, dtype=torch.float32,
+                 # ---- trace controls (per-step npz) ----
+                 enable_trace: bool = True,
+                 trace_every: int = 5,
+                 trace_dir: str = "./tgssp_trace",
+                 trace_bmax: int = 6,
+                 store_time_feats: bool = True,
+                 trace_prefix: str = "step"):
         super().__init__()
         self.Cin = in_channels
         self.Cout = out_channels
-        self.K = int(K)
+        self.K = int(N)
         self.modes_t = int(modes_t)
-        self.low_k = int(low_k)
-        self.mid_ratio = float(mid_ratio)
-        self.high_ratio = float(high_ratio)
         self.device = device
         self.dtype = dtype
+        self.time_feat_dim = int(time_feat_dim)
 
-        # --- low per-mode independent slots (size = low_k) ---
+        s0, s1 = float(energy_splits[0]), float(energy_splits[1])
+        low_k = max(1, int(round(s0 * self.K)))
+        mid_k = int(round((s1 - s0) * self.K))
+        high_k = max(0, self.K - low_k - mid_k)
+        self.low_k = int(low_k)
+        self.mid_k = int(mid_k)
+        self.high_k = int(high_k)
+
+        # 权重
         self.w_low = nn.Parameter(
-            torch.randn(in_channels, out_channels, max(1, self.low_k), self.modes_t, 2,
+            torch.randn(out_channels, out_channels, max(1, self.low_k), self.modes_t, 2,
                         dtype=dtype, device=device) * 0.02
         )
-        # --- shared kernels for neg / mid / high (each independent) ---
         self.w_neg = nn.Parameter(
-            torch.randn(in_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
+            torch.randn(out_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
         )
         self.w_mid = nn.Parameter(
-            torch.randn(in_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
+            torch.randn(out_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
         )
         self.w_high = nn.Parameter(
-            torch.randn(in_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
+            torch.randn(out_channels, out_channels, self.modes_t, 2, dtype=dtype, device=device) * 0.02
         )
 
-        # --- determine fixed mid_k / high_k at init from K and low_k ---
-        rem_budget = max(0, self.K - self.low_k)
-        self.mid_k = int(self.mid_ratio * rem_budget)
-        self.mid_k = min(self.mid_k, rem_budget)
-        self.high_k = rem_budget - self.mid_k
-
-        # --- store per-band alphas only for mid_k / high_k (non-negative via softplus) ---
         if self.mid_k > 0:
-            init_mid = 0.1
-            alpha_mid_raw = torch.full((self.mid_k,), init_mid, dtype=dtype, device=device)
-            self.alpha_mid_raw = nn.Parameter(alpha_mid_raw)
+            self.alpha_mid_raw = nn.Parameter(torch.full((self.mid_k,), 0.1, dtype=dtype, device=device))
         else:
             self.alpha_mid_raw = None
         if self.high_k > 0:
-            init_high = 0.1
-            alpha_high_raw = torch.full((self.high_k,), init_high, dtype=dtype, device=device)
-            self.alpha_high_raw = nn.Parameter(alpha_high_raw)
+            self.alpha_high_raw = nn.Parameter(torch.full((self.high_k,), 0.1, dtype=dtype, device=device))
         else:
             self.alpha_high_raw = None
 
@@ -918,12 +655,24 @@ class GraphSpectralConvS(nn.Module):
         else:
             self.b_modes = None
 
-        # gate MLP: outputs 4 values per time step (neg, low, mid, high)
+        # 门控 MLP：每时间步 -> 4 个频带（neg/low/mid/high）
         self.gate_mlp = nn.Sequential(
-            nn.Linear(time_feat_dim*2, 16),
+            nn.Linear(self.time_feat_dim * 2, 16),
             nn.ReLU(),
             nn.Linear(16, 4)
         )
+
+        # ---- trace states (per-step npz) ----
+        self.enable_trace = bool(enable_trace)
+        self.trace_every = int(trace_every)
+        self.trace_dir = os.path.abspath(trace_dir)
+        self.step_dir = os.path.join(self.trace_dir, "steps_npz")
+        self.trace_bmax = int(trace_bmax)
+        self.store_time_feats = bool(store_time_feats)
+        self.trace_prefix = str(trace_prefix)
+        os.makedirs(self.step_dir, exist_ok=True)
+
+        self._global_step = 0  # forward 调用计数
 
     @staticmethod
     def _to_complex(realimag):
@@ -931,22 +680,16 @@ class GraphSpectralConvS(nn.Module):
 
     # === 核心频域卷积（供 S/T 共用） ===
     def spectral_conv(self, vh: torch.Tensor, eigvals: torch.Tensor, time_feats: Optional[torch.Tensor] = None):
-        """
-        vh: (B, Cin, K, T) complex (already in spectral domain)
-        eigvals: (K,) real, to split bands
-        time_feats: (B, T, F_time) or None
-        return: (B, Cout, K, Tsel) complex
-        """
         B, Cin, K_in, T = vh.shape
         assert K_in == self.K, f"vh K={K_in} must match init K={self.K}"
         device = vh.device
         Tsel = min(T, self.modes_t)
-
         eigvals = eigvals.to(device)
+
+        # split indices
         neg_idx = torch.nonzero(eigvals < 0, as_tuple=False).squeeze(-1)
         pos_idx = torch.nonzero(eigvals >= 0, as_tuple=False).squeeze(-1)
 
-        # positive bands split: low / mid / high
         n_pos = pos_idx.numel()
         n_low = min(self.low_k, n_pos)
         rem = max(0, n_pos - n_low)
@@ -964,14 +707,13 @@ class GraphSpectralConvS(nn.Module):
         neg_idx  = clamp(neg_idx)
 
         out = torch.zeros(B, self.Cout, self.K, Tsel, dtype=vh.dtype, device=device)
-
-        W_low_c  = self._to_complex(self.w_low[..., :Tsel])   # (Cin, Cout, low_k, Tsel)
-        W_neg_c  = self._to_complex(self.w_neg[..., :Tsel])   # (Cin, Cout, Tsel)
-        W_mid_c  = self._to_complex(self.w_mid[..., :Tsel])   # (Cin, Cout, Tsel)
-        W_high_c = self._to_complex(self.w_high[..., :Tsel])  # (Cin, Cout, Tsel)
+        W_low_c  = self._to_complex(self.w_low[..., :Tsel])
+        W_neg_c  = self._to_complex(self.w_neg[..., :Tsel])
+        W_mid_c  = self._to_complex(self.w_mid[..., :Tsel])
+        W_high_c = self._to_complex(self.w_high[..., :Tsel])
         b_c = self._to_complex(self.b_modes[..., :Tsel]) if self.b_modes is not None else None
 
-        # NEG band
+        # NEG
         if neg_idx.numel() > 0:
             vh_neg = vh[:, :, neg_idx, :Tsel]
             out_neg = torch.einsum('b c m t, c o t -> b o m t', vh_neg, W_neg_c)
@@ -979,18 +721,18 @@ class GraphSpectralConvS(nn.Module):
             if b_c is not None:
                 out[:, :, neg_idx, :] += b_c[None, :, neg_idx, :]
 
-        # LOW band
+        # LOW
         if low_idx.numel() > 0:
             vh_low = vh[:, :, low_idx, :Tsel]
             m_low = low_idx.numel()
             Wl_sel = W_low_c[..., :m_low, :]
-            Wl_perm = Wl_sel.permute(2,0,1,3).contiguous()
+            Wl_perm = Wl_sel.permute(2, 0, 1, 3).contiguous()  # (m, Cout, Cout, Tsel)
             out_low = torch.einsum('b c m t, m c o t -> b o m t', vh_low, Wl_perm)
             out[:, :, low_idx, :] = out_low
             if b_c is not None:
                 out[:, :, low_idx, :] += b_c[None, :, low_idx, :]
 
-        # MID band
+        # MID
         if mid_idx.numel() > 0:
             vh_mid = vh[:, :, mid_idx, :Tsel]
             out_mid = torch.einsum('b c m t, c o t -> b o m t', vh_mid, W_mid_c)
@@ -1003,7 +745,7 @@ class GraphSpectralConvS(nn.Module):
             if b_c is not None:
                 out[:, :, mid_idx, :] += b_c[None, :, mid_idx, :]
 
-        # HIGH band
+        # HIGH
         if high_idx.numel() > 0:
             vh_high = vh[:, :, high_idx, :Tsel]
             out_high = torch.einsum('b c m t, c o t -> b o m t', vh_high, W_high_c)
@@ -1020,19 +762,30 @@ class GraphSpectralConvS(nn.Module):
         if time_feats is not None:
             T_in = time_feats.size(1)
             t_use = min(Tsel, T_in)
-            #B,T,C
-            time_feats = time_feats[:, :, :t_use].transpose(1, 2)
-            time_feats_reim = torch.cat([time_feats.real, time_feats.imag], dim=-1)  # (B, 2C, T)
-            gate_raw = self.gate_mlp(time_feats_reim)
-            gate = torch.sigmoid(gate_raw).permute(0, 2, 1).unsqueeze(2)  # (B,4,1,t_use)
-            # 若 Tsel > t_use，用最后一个时间步的门控填充
+            tf = time_feats[:, :t_use]
+            if torch.is_complex(tf):
+                tf_reim = torch.cat([tf.real, tf.imag], dim=-1)  # (B, t_use, 2F)
+            else:
+                tf_reim = torch.cat([tf, tf], dim=-1)            # 若为实数，则复制一份以满足 2F
+            F2_expected = self.time_feat_dim * 2
+            F2_in = tf_reim.size(-1)
+            if F2_in >= F2_expected:
+                tf_reim = tf_reim[..., :F2_expected]
+            else:
+                pad = F2_expected - F2_in
+                tf_reim = F.pad(tf_reim, (0, pad), mode="constant", value=0.0)
+
+            gate_raw = self.gate_mlp(tf_reim.reshape(-1, F2_expected))  # (B*t_use, 4)
+            gate = torch.sigmoid(gate_raw).view(B, t_use, 4).permute(0, 2, 1).unsqueeze(2)  # (B,4,1,t_use)
             if t_use < Tsel:
                 last = gate[..., -1:].expand(-1, -1, -1, Tsel - t_use)
                 gate = torch.cat([gate, last], dim=-1)
         else:
             gate = torch.ones(vh.size(0), 4, 1, Tsel, device=device, dtype=vh.real.dtype)
+            tf_reim = None
 
         out_final = torch.zeros_like(out)
+
         def apply_gate(idx, chan):
             if idx.numel() == 0:
                 return
@@ -1040,17 +793,219 @@ class GraphSpectralConvS(nn.Module):
             g = gate[:, chan:chan+1, :, :].expand(-1, 1, m, -1)  # (B,1,m,Tsel)
             out_final[:, :, idx, :] = g * out[:, :, idx, :]
 
-        # 0/1/2/3 -> neg/low/mid/high
+        #可视化（仅 eval 时执行）
+        if  self.training:
+            try:
+                with torch.no_grad():
+                    self._maybe_collect_viz(time_feats, eigvals, epoch_or_step=-1, tag='auto')
+            except Exception:
+                pass
+
         apply_gate(neg_idx, 0)
         apply_gate(low_idx, 1)
         apply_gate(mid_idx, 2)
         apply_gate(high_idx, 3)
+
+    #    ---------- 每 step 写一个独立 npz 文件（仅 eval 且 enable_trace 时） ----------
+        if self.training and getattr(self, "enable_trace", False):
+            # 维护 global step（如果你希望 eval 时也统计）
+            self._global_step = getattr(self, "_global_step", 0) + 1
+
+            if (self._global_step % max(1, getattr(self, "trace_every", 1)) == 0):
+                try:
+                    with torch.no_grad():
+                        self._dump_step_npz(
+                            vh=vh, out_pre=out, out_post=out_final, gate=gate,
+                            tf_reim=tf_reim, eigvals=eigvals,
+                            neg_idx=neg_idx, low_idx=low_idx, mid_idx=mid_idx, high_idx=high_idx,
+                            Tsel=Tsel
+                        )
+                except Exception as e:
+                    print(f"[tgssp-trace] npz dump failed at step {self._global_step}: {e}")
+
         return out_final
 
-    # 兼容老调用：把参数转给 spectral_conv
     def forward(self, vh, eigvecs=None, eigvals=None, time_feats=None):
         assert eigvals is not None, "eigvals must be provided"
         return self.spectral_conv(vh, eigvals, time_feats)
+
+    # ===================== 每 step 独立 npz 存储 =====================
+
+    @staticmethod
+    def _band_energy(inp: torch.Tensor, idx: torch.Tensor, Tsel: int):
+        if idx.numel() == 0:
+            return torch.zeros(inp.size(0), Tsel, device=inp.device, dtype=inp.real.dtype)
+        x = inp[:, :, idx, :Tsel]  # (B, Cin/Cout, m, Tsel)
+        e = (x.real.pow(2) + x.imag.pow(2)).sum(dim=(1, 2))  # (B, Tsel)
+        return e
+
+    def _dump_step_npz(self, vh, out_pre, out_post, gate, tf_reim, eigvals,
+                       neg_idx, low_idx, mid_idx, high_idx, Tsel):
+        device = vh.device
+        B = vh.size(0)
+
+        # 抽样 batch 索引（均匀采样）
+        bmax = min(self.trace_bmax, B)
+        if bmax <= 0:
+            return
+        if B <= bmax:
+            b_sel = torch.arange(B, device=device)
+        else:
+            grid = torch.linspace(0, B - 1, steps=bmax, device=device)
+            b_sel = torch.round(grid).long().unique()
+        Bsel = int(b_sel.numel())
+
+        # 构建各项（全部用“真实尺寸”，不做 pad，彻底避免广播/维度不一致）
+        neg_idx_np = neg_idx.detach().cpu().numpy()
+        low_idx_np = low_idx.detach().cpu().numpy()
+        mid_idx_np = mid_idx.detach().cpu().numpy()
+        high_idx_np = high_idx.detach().cpu().numpy()
+        eigvals_np = eigvals.detach().float().cpu().numpy()
+
+        band_code = np.zeros((self.K,), dtype=np.int8)
+        band_code[neg_idx_np] = 1
+        band_code[low_idx_np] = 2
+        band_code[mid_idx_np] = 3
+        band_code[high_idx_np] = 4
+
+        # gate: (Bsel, 4, Tsel)
+        gate_np = gate[:, :, 0, :].detach().float().cpu().numpy()
+        gate_np = gate_np[b_sel.cpu().numpy()]
+
+        # energies: (Bsel, 4, Tsel)
+        Ein = torch.stack([
+            self._band_energy(vh, neg_idx, Tsel),
+            self._band_energy(vh, low_idx, Tsel),
+            self._band_energy(vh, mid_idx, Tsel),
+            self._band_energy(vh, high_idx, Tsel),
+        ], dim=1)
+        Eout_pre = torch.stack([
+            self._band_energy(out_pre, neg_idx, Tsel),
+            self._band_energy(out_pre, low_idx, Tsel),
+            self._band_energy(out_pre, mid_idx, Tsel),
+            self._band_energy(out_pre, high_idx, Tsel),
+        ], dim=1)
+        Eout_post = torch.stack([
+            self._band_energy(out_post, neg_idx, Tsel),
+            self._band_energy(out_post, low_idx, Tsel),
+            self._band_energy(out_post, mid_idx, Tsel),
+            self._band_energy(out_post, high_idx, Tsel),
+        ], dim=1)
+
+        Ein_np = Ein[b_sel][:, :, :Tsel].detach().float().cpu().numpy()
+        Eout_pre_np = Eout_pre[b_sel][:, :, :Tsel].detach().float().cpu().numpy()
+        Eout_post_np = Eout_post[b_sel][:, :, :Tsel].detach().float().cpu().numpy()
+
+        # 非平稳性代理：var(diff)/var(level) -> (Bsel,4)
+        def ns_ratio_row(e_np):
+            if e_np.size < 2:
+                return np.float32(0.0)
+            v_level = np.var(e_np.astype(np.float64))
+            v_diff = np.var(np.diff(e_np.astype(np.float64)))
+            return np.float32(v_diff / (v_level + 1e-12))
+        nsr = np.zeros((Bsel, 4), dtype=np.float32)
+        for bi in range(Bsel):
+            for k in range(4):
+                nsr[bi, k] = ns_ratio_row(Ein_np[bi, k])
+
+        # time features（可选）：(Bsel, Tsel, 2F)
+        if self.store_time_feats:
+            if tf_reim is not None:
+                tf_np = tf_reim[b_sel][:, :Tsel].detach().float().cpu().numpy()
+            else:
+                tf_np = np.zeros((Bsel, Tsel, self.time_feat_dim * 2), dtype=np.float32)
+        else:
+            tf_np = None
+
+        # 内核时间能量（4, Tsel）
+        def l2_over(ten, dims):
+            return torch.sqrt(torch.clamp((ten.abs() ** 2).sum(dim=dims), min=1e-12))
+        W_low_c  = self._to_complex(self.w_low[..., :Tsel])
+        W_neg_c  = self._to_complex(self.w_neg[..., :Tsel])
+        W_mid_c  = self._to_complex(self.w_mid[..., :Tsel])
+        W_high_c = self._to_complex(self.w_high[..., :Tsel])
+
+        En_neg_t = l2_over(W_neg_c, dims=(0, 1)).detach().float().cpu().numpy()
+        En_mid_t = l2_over(W_mid_c, dims=(0, 1)).detach().float().cpu().numpy()
+        En_high_t = l2_over(W_high_c, dims=(0, 1)).detach().float().cpu().numpy()
+        if self.low_k > 0:
+            En_low_t = l2_over(W_low_c, dims=(0, 1, 2)).detach().float().cpu().numpy()
+        else:
+            En_low_t = np.zeros((Tsel,), dtype=np.float32)
+        kernel_energy = np.stack([En_neg_t, En_low_t, En_mid_t, En_high_t], axis=0)  # (4, Tsel)
+
+        # alpha（两种：使用到的长度，以及全量长度）
+        alpha_mid_used = np.array([], dtype=np.float32)
+        alpha_high_used = np.array([], dtype=np.float32)
+        if mid_idx.numel() > 0 and self.alpha_mid_raw is not None:
+            alpha_mid_used = F.softplus(self.alpha_mid_raw)[: mid_idx.numel()].detach().float().cpu().numpy()
+        if high_idx.numel() > 0 and self.alpha_high_raw is not None:
+            alpha_high_used = F.softplus(self.alpha_high_raw)[: high_idx.numel()].detach().float().cpu().numpy()
+        alpha_mid_all = F.softplus(self.alpha_mid_raw).detach().float().cpu().numpy() if self.alpha_mid_raw is not None else np.array([], dtype=np.float32)
+        alpha_high_all = F.softplus(self.alpha_high_raw).detach().float().cpu().numpy() if self.alpha_high_raw is not None else np.array([], dtype=np.float32)
+
+        valid_counts = np.array([
+            int(Bsel), int(Tsel),
+            int(neg_idx.numel()), int(low_idx.numel()),
+            int(mid_idx.numel()), int(high_idx.numel())
+        ], dtype=np.int32)
+
+        # 组织要写入的 dict（全部为“本次 step 的真实尺寸”）
+        flat = {
+            # meta
+            "meta/step": np.array(self._global_step, dtype=np.int64),
+            "meta/Bsel": np.array(Bsel, dtype=np.int32),
+            "meta/Tsel": np.array(Tsel, dtype=np.int32),
+            "meta/K": np.array(self.K, dtype=np.int32),
+            "meta/Cin": np.array(self.Cin, dtype=np.int32),
+            "meta/Cout": np.array(self.Cout, dtype=np.int32),
+            "meta/low_k": np.array(self.low_k, dtype=np.int32),
+            "meta/mid_k": np.array(self.mid_k, dtype=np.int32),
+            "meta/high_k": np.array(self.high_k, dtype=np.int32),
+
+            # bands
+            "bands/eigvals": eigvals_np.astype(np.float32),
+            "bands/neg_idx": neg_idx_np,
+            "bands/low_idx": low_idx_np,
+            "bands/mid_idx": mid_idx_np,
+            "bands/high_idx": high_idx_np,
+            "bands/band_code": np.array([band_code], dtype=np.int8).squeeze(0),  # (K,)
+
+            # stats
+            "gate": gate_np,                  # (Bsel,4,Tsel)
+            "Ein": Ein_np,                    # (Bsel,4,Tsel)
+            "Eout_pre": Eout_pre_np,          # (Bsel,4,Tsel)
+            "Eout_post": Eout_post_np,        # (Bsel,4,Tsel)
+            "ns_ratio": nsr,                  # (Bsel,4)
+            "kernel_energy": kernel_energy,   # (4,Tsel)
+
+            # alpha
+            "alpha/mid_used": alpha_mid_used,     # (n_mid_used,)
+            "alpha/high_used": alpha_high_used,   # (n_high_used,)
+            "alpha/mid_all": alpha_mid_all,       # (mid_k,)
+            "alpha/high_all": alpha_high_all,     # (high_k,)
+
+            "valid_counts": valid_counts
+        }
+        if self.store_time_feats:
+            if tf_reim is not None:
+                flat["time_feats_used"] = tf_np  # (Bsel,Tsel,2F)
+
+        # 写入 step 文件（原子写 -> rename）
+        step_name = f"{self.trace_prefix}_{self._global_step:06d}.npz"
+        out_path = Path(self.step_dir) / step_name
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, dir=str(out_path.parent), suffix=".npz") as tmp:
+                np.savez_compressed(tmp, **flat)
+                tmp_path = tmp.name
+            os.replace(tmp_path, str(out_path))
+            print(f"[tgssp-trace] npz saved: {out_path.name} (Bsel={Bsel}, Tsel={Tsel})")
+        except Exception as e:
+            # 回退方案：直接写（非原子）
+            print(f"[tgssp-trace] atomic save failed ({e}), fallback to direct save.")
+            np.savez_compressed(str(out_path), **flat)
+
 
 
 class GraphSpectralConvT(GraphSpectralConvS):
@@ -1058,8 +1013,9 @@ class GraphSpectralConvT(GraphSpectralConvS):
         self,
         in_channels: int,
         out_channels: int,
-        modes_x: int,
+        N: int,
         modes_t: int,
+        energy_splits: List[float],
         delta: float = 1e-1,
         out_steps: int = None,
         norm: str = "backward",
@@ -1071,8 +1027,9 @@ class GraphSpectralConvT(GraphSpectralConvS):
         super().__init__(
             in_channels,
             out_channels,
-            modes_x,
+            N,
             modes_t,
+            energy_splits,
             bias=bias,
         )
         self.out_steps = out_steps
@@ -1124,7 +1081,7 @@ class GraphSpectralConvT(GraphSpectralConvS):
         if torch.is_complex(eig):
             y_back = torch.einsum('bktc,nk->bntc', y_time, eig).real
         else:
-            y_back = torch.einsum('bktc,nk->bntc', y_time, eig)
+            y_back = torch.einsum('bktc,nk->bntc', y_time.real, eig)
             if torch.is_complex(y_back):
                 y_back = y_back.real
 
@@ -1138,6 +1095,7 @@ class GraphSpectralConvT(GraphSpectralConvS):
 class LiftingOperator(nn.Module):
     def __init__(
         self,
+        input:int,
         width: int,
         modes_x: int,
         modes_t: int,
@@ -1164,7 +1122,7 @@ class LiftingOperator(nn.Module):
             modes_x // 2,
             pe_modes_t // 2,
             input_shape=input_shape,
-            num_channels=width,
+            num_channels=input,
             time_exponential_scale=beta,
             spatial_random_feats=spatial_random_feats,
         )
@@ -1202,288 +1160,14 @@ class LiftingOperator(nn.Module):
         v = self.activation(v[..., -1:]+ w)
         return v
 
-
-class OutConv(nn.Module):
-    def __init__(
-        self,
-        modes_x: int,
-        modes_t: int,
-        delta: float = 0.1,
-        out_dim: int = 1,
-        diam: float = 1,
-        n_grid: int = 64,
-        out_steps: int = None,
-        spatial_padding: int = 0,
-        temporal_padding: bool = True,
-        norm: str = "backward",
-        **kwargs,
-    ) -> None:
-        super().__init__()
-        """
-        from latent steps to output steps
-        diam and n_grid are only needed for Helmholtz decomposition
-        """
-        self.size = [out_dim, out_dim, modes_x, modes_t]
-        if out_dim == 2:
-            postprocess = HelmholtzProjection(n_grid=n_grid, diam=diam)
-        elif out_dim == 1:
-            postprocess = nn.Identity()
-        self.conv = SpectralConvT(
-            *self.size,
-            norm=norm,
-            delta=delta,
-            out_steps=out_steps,
-            bias=True,
-            temporal_padding=temporal_padding,
-            postprocess=postprocess,
-        )
-        self.n_grid = n_grid
-        self.norm = norm
-        self.delta = delta
-        self.spatial_padding = spatial_padding
-        self.temporal_padding = temporal_padding
-
-    def forward(self, v, v_res, out_steps: int, **kwargs):
-        """
-        input v: (b, d, x, y, t_latent)
-        d = out_dim = 1 or 2
-        input v_res: (b, x, y, t_in) or (b, 2, x, y, t_in)
-        after channel reduction and padding length
-        v: (b, x, y, t_latent) or (b, 2, x, y, t_latent)
-        v_res input (b, x, y, t_out) if out_steps is None
-        """
-        v_res = v_res.permute(0,3,1,2)
-        v = torch.cat([v_res[..., -1:], v], dim=-1)
-        if self.spatial_padding > 0:
-            sp = self.spatial_padding
-            padding_kws = {"pad": (0, 0, sp, sp), "mode": "constant"}
-            v = F.pad(v, **padding_kws)
-
-        v = self.conv(v, out_steps=out_steps + 1)
-        # if dim reduction is 2, then this v is postprocessed to be divergence free
-        # the squeeze(1) would do nothing in the case of velocity
-
-        if self.spatial_padding > 0:
-            v = v[..., sp:-sp, :]
-
-        v = v_res[..., -1:] + v[..., -out_steps:]
-        return v.squeeze(1)
-
-
-
-
-# -------------------------
-# SpecGraphFreqNet (SFNO-style)
-# -------------------------
-class GTFNO3d(nn.Module):
-    def __init__(
-            self,
-            modes_x: int,
-            modes_y: int,
-            modes_t: int,
-            width: int,
-            out_dim: int = 1,
-            beta: float = -1e-2,
-            delta: float = 1e-1,
-            num_spectral_layers: int = 4,
-            fft_norm: str = "backward",
-            activation: ActivationType = "ReLU",
-            spatial_padding: int = 0,
-            temporal_padding: bool = True,
-            channel_expansion: int = 4,
-            spatial_random_feats: bool = False,
-            lift_activation: bool = True,
-            latent_steps: int = 10,
-            output_steps: int = None,
-            debug=False,
-            **kwargs,
-    ):
-        super().__init__(
-            num_spectral_layers=num_spectral_layers,
-            fft_norm=fft_norm,
-            activation=activation,
-            spatial_padding=spatial_padding,
-            channel_expansion=channel_expansion,
-            spatial_random_feats=spatial_random_feats,
-            lift_activation=lift_activation,
-            debug=debug,
-            **kwargs,
-        )
-
-        """
-        The overall network reimplemented to model (2+1)D spatiotemporal PDEs of 
-        a scalar field/vector fields of NSE-like equations.
-
-        Major architectural differences:
-
-        1. New lifting operator
-            - new PE: since the treatment of grid is different from FNO official code, which give my autograd trouble, new PE is similar to the one used in the Transformers, the time dimension's PE is according to the NSE. The PE occupies the extra channels.
-            - new LayerNorm3d: instead of normalizing the input/output pointwisely when preparing the data like the original FNO did, this makes an input-steps agnostic normalization. Note that the global normalization by mean/std of (n, n, n_t)-shaped tensor in the original FNO3d prevents to predict arbitrary time steps.
-            - the channel lifting now works pretty much like the depth-wise conv but uses the globally spectral as FNO does. Since there is no need to treat the time steps as channels now it can accept arbitrary time steps in the input.
-        2. new out projection: it maps the latent time steps to a given output time steps using FFT's natural super-resolution.
-            - output arbitrary steps.
-            - aliasing error handled by zero padding
-            - the spectral bias works like a source term in the Fredholm integral operator.
-        3. n layers of the integral operators u' = (W + K)(u).
-            W defined by self.w; K defined by self.conv.
-
-        Hyper-params:
-        - mode_x, mode_y, mode_t: the number of Fourier modes in the x, y, t dimensions
-        - width: the number of channels in the latent space   
-        - num_spectral_layers: the number of spectral conv layers, the first layer is in the lifting operator  
-        - spatial_padding: the padding size in the spatial dimensions
-        - temporal_padding: whether to pad the temporal dimension, by default it is True, recommended to keep it True to avoid aliasing error
-        - out_steps: the number of output time steps, if None, it will be set to the temporal dimension of the input
-        - activation: the activation function, users provide string that directly pulls from nn. default: ReLU
-        - lift_activation: whether to use activation in the lifting operator
-        - spatial_random_feats: whether to use spatial random features in the lifting operator
-        - channel_expansion: the number of channels in the MLP, default: 128
-
-        Grid information:
-        - diam: the diameter of the domain, only used in the Helmholtz decomposition
-        - n_grid: the grid size of the training data, only needed for building the fft mesh for the Helmholtz decompostion, in the forward pass the size is arbitrary (if different from the n_grid, Helmholtz layer will re-build the fft mesh, which introduces a tiny overhead)
-
-        Several key hyper-params that is different from FNO3d:
-        - beta: the exponential scaling factor for the time PE, ideally it should match the a priori estimate the energy of the NSE
-        - delta: the strength of the final skip-connection.
-        - latent steps: the number of time steps in the hidden layers, this is independent of the input/output steps; chosing it >= 3/2 of input length is similar to zero padding of FFT to avoid aliasing due to non-periodic in the temporal dimension
-        - dim_reduction: 1 for scalar field such as vorticity, 2 for vector field such as velocity
-
-        input: w(x, y, t) in the shape of (bsz, x, y, t)
-        output: w(x, y, t) in the shape of (bsz, x, y, t)
-        """
-
-        self.modes_x = modes_x
-        self.modes_y = modes_y
-        self.modes_t = modes_t
-        self.width = width
-
-        assert num_spectral_layers > 1
-        num_spectral_layers -= 1
-        # the lifting operator has already an sconv
-
-        self._set_spectral_layers(
-            num_spectral_layers,
-            [modes_x, modes_y, modes_t],
-            width,
-            spectral_conv=SpectralConvS,
-            mlp=PointwiseFFN,
-            linear=nn.Conv3d,
-            activation=activation,
-            channel_expansion=channel_expansion,
-        )
-
-        self.lifting_operator = LiftingOperator(
-            width,
-            modes_x,
-            modes_y,
-            modes_t,
-            latent_steps=latent_steps,
-            norm=fft_norm,
-            beta=beta,
-            activation=activation,
-            spatial_random_feats=spatial_random_feats,
-            channel_expansion=channel_expansion,
-            nonlinear=lift_activation,
-        )
-
-        self.output_operator = OutConv(
-            modes_x,
-            modes_y,
-            modes_t,
-            out_dim=out_dim,
-            delta=delta,
-            out_steps=output_steps,
-            spatial_padding=spatial_padding,
-            temporal_padding=temporal_padding,
-            norm=fft_norm,
-        )
-
-        self.reduction = nn.Conv3d(width, 1, kernel_size=1)
-        self.out_steps = output_steps
-        self.debug = debug
-
-    def forward(self, x: torch.Tensor, eigvecs: torch.Tensor, lambdas: torch.Tensor) -> torch.Tensor:
-        """
-        x: real [B, N, T, F_in]
-        eigvecs: [N, K] or complex
-        lambdas: [K]
-        returns: real [B, N, T, F_in] (residual added)
-        """
-        
-        if out_steps is None:
-            out_steps = self.out_steps if self.out_steps is not None else v.size(-1)
-        v_res = v  # save skip connection
-        v = rearrange(v, "b x y t -> b 1 x y t")
-        v = self.lifting_operator(v)  # [b, 1, x, y, T] -> [b, H, x, y, T]
-
-        for conv, mlp, w, nonlinear in zip(
-            self.spectral_conv, self.mlp, self.w, self.activations
-        ):
-            x1 = conv(v)  # (b,H,x,y,t)
-            x1 = mlp(x1)  # conv3d (b, H, x, y, t) -> (b, H, x, y, t)
-            x2 = w(v)
-            v = x1 + x2
-            v = nonlinear(v)
-
-        v = self.reduction(v)  # (b, H, x, y, t) -> (b, 1, x, y, t)
-        v = self.output_operator(
-            v, v_res, out_steps=out_steps
-        )  # (b,1,x,y,t) -> (b,x,y,t)
-        return v
-        
-        
-        B, N, T, C = x.shape
-        device = x.device
-        dtype = x.dtype
-
-        # 1) GFT (project spatially). If eigvecs complex, use conjugate.
-        if torch.is_complex(eigvecs):
-            x_c = x.to(dtype=torch.complex64)
-            x_gft = torch.einsum('bntc,nk->bktc', x_c, eigvecs.conj().to(device))
-        else:
-            x_gft = torch.einsum('bntc,nk->bktc', x.to(device), eigvecs.to(device))
-
-        # 2) FFT in time dimension -> complex spectral coeffs [B, K, T, C]
-        x_spec = torch.fft.fft(x_gft, dim=2)
-
-        # 3) Lifting operator -> complex latent [B, K, T, H]
-        z = self.lifting(x_spec)  # complex
-
-        # 4) Spectral blocks (operate in mode domain, time preserved)
-        for block in self.spec_blocks:
-            z = block(z)
-        # 5) Project complex latent to real channel space (take real part after ifft)
-        # first reshape and convert to complex->real projection
-        Bk, K, Tt, H = z.shape
-        # inverse FFT in time domain
-        y_ifft = torch.fft.ifft(z, dim=2)  # complex [B,K,T,H]
-        # inverse GFT: project back to node domain
-        if torch.is_complex(eigvecs):
-            y_back = torch.einsum('bktc,nk->bntc', y_ifft, eigvecs.to(device))
-            y_back_real = y_back.real
-        else:
-            y_back = torch.einsum('bktc,nk->bntc', y_ifft, eigvecs.to(device))
-            # y_back may be complex (if z complex) - take real part
-            y_back_real = y_back.real if torch.is_complex(y_back) else y_back
-
-        # optional postprocess in node domain (e.g., Helmholtz)
-        if self.postprocess is not None:
-            y_back_real = self.postprocess(y_back_real)
-
-        # final pointwise projection and residual
-        y_proj = self.final_complex_to_real(y_back_real.reshape(-1, H)).reshape(B, N, Tt, C)
-        out = x + y_proj  # residual
-
-        return out.float()
-
-
 class GTFNO2d(FNOBase):
     def __init__(
             self,
-            x: int,
-            t: int,
+            N: int,
+            T: int,
+            input: int,
             width: int,
+            energy_splits:List[float],
             out_dim: int = 1,
             beta: float = -1e-2,
             delta: float = 1e-1,
@@ -1511,10 +1195,23 @@ class GTFNO2d(FNOBase):
             debug=debug,
             **kwargs,
         )
-
-        modes_x = x
-        modes_t = t//2
+        modes_t = T//2
         self.width = width
+
+        self.lifting_operator = LiftingOperator(
+            input,
+            width,
+            N//4,
+            modes_t,
+            input_shape=(N,T),
+            latent_steps=latent_steps,
+            norm=fft_norm,
+            beta=beta,
+            activation=activation,
+            spatial_random_feats=spatial_random_feats,
+            channel_expansion=channel_expansion,
+            nonlinear=lift_activation,
+        )
 
         assert num_spectral_layers > 1
         num_spectral_layers -= 1
@@ -1522,8 +1219,7 @@ class GTFNO2d(FNOBase):
 
         self.spectral_conv = nn.ModuleList(
             [
-                GraphSpectralConvT(width, width, modes_x, modes_t,out_steps=t)
-                #SpectralConvT(width, width, modes_x, modes_t,out_steps=t)
+                GraphSpectralConvT(input, width, N, modes_t,energy_splits,out_steps=T)
                 for _ in range(num_spectral_layers)
             ]
         )
@@ -1540,33 +1236,7 @@ class GTFNO2d(FNOBase):
             [nn.GELU() for _ in range(num_spectral_layers)]
         )
 
-
-        self.lifting_operator = LiftingOperator(
-            width,
-            modes_x,
-            modes_t,
-            input_shape=(x,t),
-            latent_steps=latent_steps,
-            norm=fft_norm,
-            beta=beta,
-            activation=activation,
-            spatial_random_feats=spatial_random_feats,
-            channel_expansion=channel_expansion,
-            nonlinear=lift_activation,
-        )
-
-        self.output_operator = OutConv(
-            modes_x,
-            modes_t,
-            out_dim=out_dim,
-            delta=delta,
-            out_steps=output_steps,
-            spatial_padding=spatial_padding,
-            temporal_padding=temporal_padding,
-            norm=fft_norm,
-        )
-
-        self.reduction = nn.Conv2d(width, width, kernel_size=1)
+        self.reduction = nn.Conv2d(width, 1, kernel_size=1)
         self.out_steps = output_steps
         self.debug = debug
 
@@ -1580,9 +1250,8 @@ class GTFNO2d(FNOBase):
 
         if out_steps is None:
             out_steps = self.out_steps if self.out_steps is not None else v.size(-1)
-        v_res = v  # save skip connection
         v = rearrange(v, "b x t f -> b f x t")
-        v = self.lifting_operator(v,eigvecs)  # [b, f, x, T] -> [b, H, x, T]
+        v = self.lifting_operator(v,eigvecs)  # [b, f, x, T] -> [b, width, x, T]
 
         for conv, mlp, w, nonlinear in zip(
                 self.spectral_conv, self.mlp, self.w, self.activations):
@@ -1593,11 +1262,7 @@ class GTFNO2d(FNOBase):
             v = nonlinear(v)
 
         v = self.reduction(v)  # (b, c, x,t) -> (b, 1, x, t)
-        # v = self.output_operator(
-        #     v, v_res, out_steps=out_steps
-        # )  # (b,1,x,t) -> (b,x,t)
         return v.permute(0,2,3,1)
-        #return v.unsqueeze(-1)
 
 class MLP(nn.Module):
     def __init__(self, in_channels, out_channels, mid_channels, activation=True):
@@ -1610,3 +1275,397 @@ class MLP(nn.Module):
         for layer in [self.mlp1, self.activation, self.mlp2]:
             x = layer(x)
         return x
+
+
+
+
+#GNO
+
+
+class GNOLayer(nn.Module):
+    """
+    实现了GNO的核心层，基于方程 (10) [1]。
+    v_{t+1}(x) = \sigma(W v_t(x) + Agg(Kernel(v_t(y))))
+    """
+
+    def __init__(self, in_channels, out_channels, N, activation=nn.GELU()):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.activation = activation
+
+        # W: 作用于节点自身的线性变换 (对应公式中的 W v_t(x))
+        self.W = nn.Linear(in_channels, out_channels)
+
+        # Kernel Integration: 对应公式中的 sum(kappa * v_t(y))
+        # 由于 forward 中没有显式传入坐标或邻接矩阵，为了无缝运行，
+        # 这里使用一个全连接的空间混合矩阵 (Spatial Mixing) 来模拟全图积分。
+        # 如果 N 很大，建议将其改为局部卷积或基于坐标的 Kernel。
+        self.spatial_mixing = nn.Linear(N, N)
+        self.kernel_lin = nn.Linear(in_channels, out_channels)
+
+    def forward(self, x):
+        # x shape: [B, Width, N, T]
+        B, C, N, T = x.shape
+
+        # 变换维度以便进行矩阵乘法: [B, T, N, C]
+        x_in = x.permute(0, 3, 2, 1)
+
+        # 1. 自身特征变换 (Local Term): W * v
+        res = self.W(x_in)  # [B, T, N, Out_C]
+
+        # 2. 邻域消息聚合 (Message Passing / Kernel Integration) [1]
+        # 模拟对空间域 D 的积分/求和
+        # 先对特征进行变换
+        msg = self.kernel_lin(x_in)  # [B, T, N, Out_C]
+        # 再在空间维度 N 上进行混合 (模拟图上的邻居聚合)
+        msg = msg.permute(0, 1, 3, 2)  # [B, T, Out_C, N]
+        msg = self.spatial_mixing(msg)  # [B, T, Out_C, N]
+        msg = msg.permute(0, 1, 3, 2)  # [B, T, N, Out_C]
+
+        # 合并
+        out = res + msg
+
+        if self.activation is not None:
+            out = self.activation(out)
+
+        # 恢复维度: [B, Out_C, N, T]
+        return out.permute(0, 3, 2, 1)
+
+
+class GNO2d(FNOBase):
+    def __init__(
+            self,
+            N: int,
+            T: int,
+            input: int,
+            width: int,
+            energy_splits: List[float],  # 保留参数以兼容接口
+            out_dim: int = 1,
+            beta: float = -1e-2,
+            delta: float = 1e-1,
+            num_spectral_layers: int = 2,
+            fft_norm: str = "backward",
+            activation: str = "ReLU",  # 注意：这里通常传入字符串或类
+            spatial_padding: int = 0,
+            temporal_padding: bool = True,
+            channel_expansion: int = 4,
+            spatial_random_feats: bool = False,
+            lift_activation: bool = True,
+            latent_steps: int = 12,
+            output_steps: int = 12,
+            debug=False,
+            **kwargs,
+    ):
+        # 初始化父类，保持参数一致
+        super().__init__(
+            num_spectral_layers=num_spectral_layers,
+            fft_norm=fft_norm,
+            activation=activation,
+            spatial_padding=spatial_padding,
+            channel_expansion=channel_expansion,
+            spatial_random_feats=spatial_random_feats,
+            lift_activation=lift_activation,
+            debug=debug,
+            **kwargs,
+        )
+
+        modes_t = T // 2
+        self.width = width
+        self.out_steps = output_steps
+        self.debug = debug
+
+        # 激活函数处理
+        if isinstance(activation, str):
+            if activation == "ReLU":
+                act_func = nn.ReLU()
+            elif activation == "GELU":
+                act_func = nn.GELU()
+            else:
+                act_func = nn.ReLU()
+        else:
+            act_func = activation
+
+        # 1. Lifting Operator (保持不变，用于特征映射)
+        self.lifting_operator = LiftingOperator(
+            input,
+            width,
+            N // 4,
+            modes_t,
+            input_shape=(N, T),
+            latent_steps=latent_steps,
+            norm=fft_norm,
+            beta=beta,
+            activation=activation,
+            spatial_random_feats=spatial_random_feats,
+            channel_expansion=channel_expansion,
+            nonlinear=lift_activation,
+        )
+
+        assert num_spectral_layers > 1
+        # 注意：原本这里是 spectral_layers，现在我们替换为 GNOLayers
+        # 文献 [1] 指出 GNO 使用多层消息传递图网络
+        self.gno_layers = nn.ModuleList()
+        for _ in range(num_spectral_layers - 1):
+            self.gno_layers.append(
+                GNOLayer(width, width, N, activation=act_func)
+            )
+
+        # 投影层 (Projection / Decoding)
+        self.reduction = nn.Conv2d(width, 1, kernel_size=1)
+
+    def forward(self, v: torch.Tensor, eigvecs: torch.Tensor, eigval: torch.Tensor, time_feats: torch.Tensor,
+                out_steps=None) -> torch.Tensor:
+        """
+        参数保持与 GTFNO2d 完全一致，以便直接替换。
+        v: real [B, N, T, F_in]
+        eigvecs: [N, K] (GNO算法中通常不直接使用谱特征，但保留接口)
+        """
+        if out_steps is None:
+            out_steps = self.out_steps if self.out_steps is not None else v.size(-1)
+
+        # 维度调整: [B, N, T, F] -> [B, F, N, T]
+        v = rearrange(v, "b x t f -> b f x t")
+
+        # Lifting: [B, F, N, T] -> [B, Width, N, T]
+        v = self.lifting_operator(v, eigvecs)
+
+        # GNO Iterative Layers (Message Passing)
+        # 替代了原有的 spectral_conv + mlp + w 结构
+        # 这里的每一层对应公式 (10) 的一次迭代更新 [1]
+        for layer in self.gno_layers:
+            v = layer(v)
+
+        # Projection to Output
+        v = self.reduction(v)  # (B, Width, N, T) -> (B, 1, N, T)
+
+        return v.permute(0, 2, 3, 1)  # -> [B, N, T, 1]
+
+##Geo-FNO
+class LatentSpectralConv3d(nn.Module):
+    """
+    修正版：使用分离的实部和虚部权重，避免 Adam 优化器在处理 cfloat 参数时的维度报错。
+    """
+
+    def __init__(self, in_channels, out_channels, modes_h, modes_w, modes_t):
+        super().__init__()
+        self.in_channels = in_channels
+        self.out_channels = out_channels
+        self.modes_h = modes_h
+        self.modes_w = modes_w
+        self.modes_t = modes_t
+
+        scale = (1 / (in_channels * out_channels))
+
+        # --- 核心修改：将复数权重拆分为实部和虚部定义 ---
+        # 形状为 (in, out, mh, mw, mt, 2)，最后一位 0 是实部，1 是虚部
+        # 这种方式对所有 PyTorch 版本和优化器都最安全
+
+        self.weights1 = nn.Parameter(
+            scale * torch.rand(in_channels, out_channels, modes_h, modes_w, modes_t, 2, dtype=torch.float32))
+        self.weights2 = nn.Parameter(
+            scale * torch.rand(in_channels, out_channels, modes_h, modes_w, modes_t, 2, dtype=torch.float32))
+        self.weights3 = nn.Parameter(
+            scale * torch.rand(in_channels, out_channels, modes_h, modes_w, modes_t, 2, dtype=torch.float32))
+        self.weights4 = nn.Parameter(
+            scale * torch.rand(in_channels, out_channels, modes_h, modes_w, modes_t, 2, dtype=torch.float32))
+
+    def get_complex_weight(self, weight_tensor):
+        # 将 (..., 2) 的 float 张量转换为 complex 张量
+        return torch.view_as_complex(weight_tensor)
+
+    def compl_mul3d(self, input, weights):
+        # (batch, in_channel, x, y, t), (in_channel, out_channel, x, y, t) -> (batch, out_channel, x, y, t)
+        # 使用 einsum 进行复数乘法
+        return torch.einsum("bixyz,ioxyz->boxyz", input, weights)
+
+    def forward(self, x):
+        batchsize = x.shape[0]
+        # 1. 3D FFT
+        # x: [B, C, H, W, T] -> FFT -> [B, C, H, W, T//2 + 1] (Complex)
+        x_ft = torch.fft.rfftn(x, dim=[-3, -2, -1])
+
+        # 2. 准备输出容器
+        out_ft = torch.zeros(batchsize, self.out_channels, x.size(-3), x.size(-2), x.size(-1) // 2 + 1,
+                             dtype=torch.cfloat, device=x.device)
+
+        # 3. 获取复数权重 (动态合成)
+        w1 = self.get_complex_weight(self.weights1)
+        w2 = self.get_complex_weight(self.weights2)
+        w3 = self.get_complex_weight(self.weights3)
+        w4 = self.get_complex_weight(self.weights4)
+
+        # 4. 频率混合 (Corner Modes)
+        # 注意：这里使用了切片操作，确保维度匹配
+        # corner 1
+        out_ft[:, :, :self.modes_h, :self.modes_w, :self.modes_t] = \
+            self.compl_mul3d(x_ft[:, :, :self.modes_h, :self.modes_w, :self.modes_t], w1)
+
+        # corner 2
+        out_ft[:, :, -self.modes_h:, :self.modes_w, :self.modes_t] = \
+            self.compl_mul3d(x_ft[:, :, -self.modes_h:, :self.modes_w, :self.modes_t], w2)
+
+        # corner 3
+        out_ft[:, :, :self.modes_h, -self.modes_w:, :self.modes_t] = \
+            self.compl_mul3d(x_ft[:, :, :self.modes_h, -self.modes_w:, :self.modes_t], w3)
+
+        # corner 4
+        out_ft[:, :, -self.modes_h:, -self.modes_w:, :self.modes_t] = \
+            self.compl_mul3d(x_ft[:, :, -self.modes_h:, -self.modes_w:, :self.modes_t], w4)
+
+        # 5. Inverse 3D FFT
+        x = torch.fft.irfftn(out_ft, s=(x.size(-3), x.size(-2), x.size(-1)))
+        return x
+
+class GeoFNO2d(FNOBase):
+    def __init__(
+            self,
+            N: int,
+            T: int,
+            input: int,
+            width: int,
+            energy_splits: List[float],
+            out_dim: int = 1,
+            beta: float = -1e-2,
+            delta: float = 1e-1,
+            num_spectral_layers: int = 2,
+            fft_norm: str = "backward",
+            activation: str = "ReLU",
+            spatial_padding: int = 0,
+            temporal_padding: bool = True,
+            channel_expansion: int = 4,
+            spatial_random_feats: bool = False,
+            lift_activation: bool = True,
+            latent_steps: int = 12,
+            output_steps: int = 12,
+            debug=False,
+            **kwargs,
+    ):
+        super().__init__(
+            num_spectral_layers=num_spectral_layers,
+            fft_norm=fft_norm,
+            activation=activation,
+            spatial_padding=spatial_padding,
+            channel_expansion=channel_expansion,
+            spatial_random_feats=spatial_random_feats,
+            lift_activation=lift_activation,
+            debug=debug,
+            **kwargs,
+        )
+
+        modes_t = T // 2
+        self.width = width
+        self.out_steps = output_steps
+        self.debug = debug
+        self.N = N
+
+        # Geo-FNO: Latent Grid Configuration
+        # 设定潜在网格大小
+        self.latent_h = int(N ** 0.5)
+        self.latent_w = int(N ** 0.5)
+        if self.latent_h * self.latent_w < N:
+            self.latent_h += 1
+
+        self.latent_dim = self.latent_h * self.latent_w
+
+        # Geo-Encoder / Decoder (Linear Deformation)
+        self.geo_encoder = nn.Linear(N, self.latent_dim)
+        self.geo_decoder = nn.Linear(self.latent_dim, N)
+
+        # FFT Modes
+        modes_h = self.latent_h // 2
+        modes_w = self.latent_w // 2
+
+        # 激活函数
+        if isinstance(activation, str):
+            if activation == "ReLU":
+                act_func = nn.ReLU()
+            elif activation == "GELU":
+                act_func = nn.GELU()
+            else:
+                act_func = nn.ReLU()
+        else:
+            act_func = activation
+
+        self.lifting_operator = LiftingOperator(
+            input,
+            width,
+            N // 4,
+            modes_t,
+            input_shape=(N, T),
+            latent_steps=latent_steps,
+            norm=fft_norm,
+            beta=beta,
+            activation=activation,
+            spatial_random_feats=spatial_random_feats,
+            channel_expansion=channel_expansion,
+            nonlinear=lift_activation,
+        )
+
+        assert num_spectral_layers > 1
+        num_spectral_layers -= 1
+
+        # 使用修正后的 LatentSpectralConv3d
+        self.spectral_conv = nn.ModuleList(
+            [
+                LatentSpectralConv3d(width, width, modes_h, modes_w, modes_t)
+                for _ in range(num_spectral_layers)
+            ]
+        )
+
+        self.mlp = nn.ModuleList(
+            [nn.Sequential(
+                nn.Conv3d(width, width * channel_expansion, 1),
+                act_func,
+                nn.Conv3d(width * channel_expansion, width, 1)
+            ) for _ in range(num_spectral_layers)]
+        )
+
+        self.w = nn.ModuleList(
+            [nn.Conv3d(width, width, 1) for _ in range(num_spectral_layers)]
+        )
+
+        self.activations = nn.ModuleList(
+            [act_func for _ in range(num_spectral_layers)]
+        )
+
+        self.reduction = nn.Conv2d(width, 1, kernel_size=1)
+
+    def forward(self, v: torch.Tensor, eigvecs: torch.Tensor, eigval: torch.Tensor, time_feats: torch.Tensor,
+                out_steps=None) -> torch.Tensor:
+        if out_steps is None:
+            out_steps = self.out_steps if self.out_steps is not None else v.size(-1)
+
+        # [B, N, T, F] -> [B, F, N, T] -> [B, Width, N, T]
+        v = rearrange(v, "b x t f -> b f x t")
+        v = self.lifting_operator(v, eigvecs)
+
+        # 1. Geo-Encoding: N -> Latent Grid
+        B, C, N, T = v.shape
+        v = v.permute(0, 1, 3, 2)  # [B, C, T, N]
+        v = self.geo_encoder(v)  # [B, C, T, Latent_Dim]
+
+        # Reshape to 3D Grid: [B, C, H, W, T]
+        # 这里的 contiguous() 很关键，防止 reshape 导致内存不连续引发错误
+        v = v.view(B, C, T, self.latent_h, self.latent_w)
+        v = v.permute(0, 1, 3, 4, 2).contiguous()  # [B, C, H, W, T]
+
+        # 2. FNO Processing
+        for conv, mlp, w, nonlinear in zip(self.spectral_conv, self.mlp, self.w, self.activations):
+            x1 = conv(v)
+            x1 = mlp(x1)
+            x2 = w(v)
+            v = x1 + x2
+            v = nonlinear(v)
+
+        # 3. Geo-Decoding: Latent Grid -> N
+        # [B, C, H, W, T] -> [B, C, T, N]
+        v = v.permute(0, 1, 4, 2, 3).contiguous()  # [B, C, T, H, W]
+        v = v.view(B, C, T, -1)  # [B, C, T, Latent_Dim]
+        v = self.geo_decoder(v)  # [B, C, T, N]
+
+        # Projection
+        v = v.permute(0, 1, 3, 2).contiguous()  # [B, C, N, T]
+        v = self.reduction(v)  # [B, 1, N, T]
+
+        return v.permute(0, 2, 3, 1)  # [B, N, T, 1]

@@ -45,9 +45,9 @@ def get_config(config_path):
 
     parser.add_argument('--mask_ratio', type=float, default=0)
     parser.add_argument('--dataset', type=str,default='PEMS-BAY')
-    parser.add_argument('--emd_dim', type=int, default=8, help="嵌入维度")
+    parser.add_argument('--emd_dim', type=int, default=4, help="嵌入维度")
     parser.add_argument('--gfno_hidden', type=int, default=8, help="GFNO隐藏层维度")
-    parser.add_argument('--energy_splits', nargs=2, type=float, default=[0.9, 0.95],
+    parser.add_argument('--energy_splits', nargs=2, type=float, default=[0.3, 0.7],
                         help="谱能量划分阈值，格式为两个浮点数，如 0.9 0.95")
     parser.add_argument('--topk_edges', type=int, default=3, help="Top-K边选择")
     parser.add_argument('--ecc_layers', type=int, default=1, help="ECC图卷积层数")
