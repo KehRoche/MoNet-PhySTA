@@ -12,8 +12,8 @@ def get_public_config():
     # seq_len denotes input history length, horizon denotes output future length
     parser.add_argument('--seq_len', type=int, default=12)
     parser.add_argument('--horizon', type=int, default=12)
-    #knowair 15,bjair33
-    parser.add_argument('--input_dim', type=int, default=15)
+    # The MoNet entrypoint overrides this from its dataset-specific mapping.
+    parser.add_argument('--input_dim', type=int, default=3)
     parser.add_argument('--output_dim', type=int, default=1)
 
     parser.add_argument('--mode', type=str, default='train')

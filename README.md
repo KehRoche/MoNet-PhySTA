@@ -41,9 +41,16 @@ data/<DATASET_NAME>/
 └── adjacency file
 ```
 
-`his.npz` should contain `data`, `mean`, and `std`. The default supported dataset keys are:
+`his.npz` should contain `data`, `mean`, and `std`. The release entrypoint currently supports these dataset keys and input dimensions:
 
-`PEMS-BAY`, `PEMS08`, `KnowAir`, `BJAir`, `SD`, `CA`, `GLA`, and `GBA`.
+| Dataset | `input_dim` |
+| --- | ---: |
+| `PEMS-BAY` | 3 |
+| `SD` | 3 |
+| `KnowAir` | 15 |
+| `BJAir` | 18 |
+
+`input_dim` is selected automatically from the dataset name because the model assumes fixed positions for target value, temporal features, and covariates.
 
 Adjacency filenames are configured in `src/utils/dataloader.py`. For example, `PEMS-BAY` uses `data/PEMS-BAY/adj_mx_bay.pkl`.
 

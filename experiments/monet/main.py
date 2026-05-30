@@ -26,6 +26,14 @@ from src.utils.logging import get_logger
 from src.utils.metrics import masked_mae
 
 
+DATASET_INPUT_DIMS = {
+    "PEMS-BAY": 3,
+    "SD": 3,
+    "KnowAir": 15,
+    "BJAir": 18,
+}
+
+
 def set_seed(seed):
     np.random.seed(seed)
     torch.manual_seed(seed)
@@ -72,6 +80,19 @@ def get_config(config_path=None):
     for key, value in vars(args).items():
         if key != "config" and value is not None:
             config[key] = value
+
+    if config["dataset"] not in DATASET_INPUT_DIMS:
+        supported = ", ".join(sorted(DATASET_INPUT_DIMS))
+        raise ValueError(f"Unsupported dataset {config['dataset']!r}. Supported datasets: {supported}")
+
+    expected_input_dim = DATASET_INPUT_DIMS[config["dataset"]]
+    if config.get("input_dim") != expected_input_dim:
+        logger_message = (
+            f"Override input_dim={config.get('input_dim')} with dataset-specific "
+            f"input_dim={expected_input_dim} for {config['dataset']}."
+        )
+        print(logger_message)
+    config["input_dim"] = expected_input_dim
 
     keys_to_log = ["emd_dim", "dataset", "gfno_hidden", "energy_splits", "mask_ratio", "topk_edges", "ecc_layers"]
     log_dir = REPO_ROOT / "eval" / str(config["model_name"]) / str(config["dataset"])

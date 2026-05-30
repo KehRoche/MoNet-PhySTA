@@ -68,7 +68,7 @@ def get_low_rank_eigenvectors(adj, rank, device='cpu'):
 class MoNet(BaseModel):
     def __init__(self, input_dim,output_dim,model_config):
         super(MoNet, self).__init__(input_dim,output_dim)
-        self.corvar_dim = self.input_dim-4
+        self.corvar_dim = max(0, self.input_dim - 4)
         self.output_dim = output_dim
 
         self.A = model_config['adj']
@@ -105,8 +105,9 @@ class MoNet(BaseModel):
         #         nn.Dropout(p=0.15),
         #         MultiLayerPerceptron(emd_dim*seq_len, emd_dim*seq_len)
         #     )
-        if self.corvar_dim >1:
+        if self.corvar_dim > 1:
             self.time_interval = 8
+            num_conditon = 5
             self.fea_dim = input_dim - 4
 
         self.hidden_dim = self.emd_dim//2*num_conditon+emd_dim
@@ -207,12 +208,13 @@ class MoNet(BaseModel):
         dow_full_emb = self.day_in_week_emb[dow_idx]  # (B,T,N,emd)
 
         tem_full_list = [tod_full_emb, dow_full_emb]
-        # if self.corvar_dim > 1:
-        #     dom_idx = (input[..., 3] * 31).long()
-        #     moy_idx = (input[..., 4] * 12).long()
-        #     dom_full_emb = self.day_in_month_emb[dom_idx]  # (B,T,N,emd)
-        #     moy_full_emb = self.month_in_year_emb[moy_idx]  # (B,T,N,emd)
-        #     tem_full_list += [dom_full_emb, moy_full_emb]
+        if self.corvar_dim > 1:
+            assert F >= 5, f"Air-quality inputs need [value, tod, dow, dom, moy], got F={F}"
+            dom_idx = torch.clamp((input[..., 3] * 31).long(), 0, 30)
+            moy_idx = torch.clamp((input[..., 4] * 12).long(), 0, 11)
+            dom_full_emb = self.day_in_month_emb[dom_idx]
+            moy_full_emb = self.month_in_year_emb[moy_idx]
+            tem_full_list += [dom_full_emb, moy_full_emb]
 
         # 拼接 temporal embeddings -> (B, T, N, C_tem)
         tem_full_emb = torch.cat(tem_full_list, dim=-1).permute(0, 3, 2, 1)  # (B,C_tem,N,T)
