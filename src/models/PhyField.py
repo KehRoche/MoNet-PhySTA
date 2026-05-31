@@ -590,25 +590,12 @@ class SpectralConvT(SpectralConvS):
 # 
 
 
-import os
-import io
-import json
-import time
-import tempfile
-from pathlib import Path
 from typing import Optional
 
 class GraphSpectralConvS(nn.Module):
     def __init__(self, in_channels, out_channels, N, modes_t,
                  energy_splits,
-                 time_feat_dim: int = 8, bias=False, device=None, dtype=torch.float32,
-                 # ---- trace controls (per-step npz) ----
-                 enable_trace: bool = True,
-                 trace_every: int = 5,
-                 trace_dir: str = "./tgssp_trace",
-                 trace_bmax: int = 6,
-                 store_time_feats: bool = True,
-                 trace_prefix: str = "step"):
+                 time_feat_dim: int = 8, bias=False, device=None, dtype=torch.float32):
         super().__init__()
         self.Cin = in_channels
         self.Cout = out_channels
@@ -661,18 +648,6 @@ class GraphSpectralConvS(nn.Module):
             nn.ReLU(),
             nn.Linear(16, 4)
         )
-
-        # ---- trace states (per-step npz) ----
-        self.enable_trace = bool(enable_trace)
-        self.trace_every = int(trace_every)
-        self.trace_dir = os.path.abspath(trace_dir)
-        self.step_dir = os.path.join(self.trace_dir, "steps_npz")
-        self.trace_bmax = int(trace_bmax)
-        self.store_time_feats = bool(store_time_feats)
-        self.trace_prefix = str(trace_prefix)
-        os.makedirs(self.step_dir, exist_ok=True)
-
-        self._global_step = 0  # forward 调用计数
 
     @staticmethod
     def _to_complex(realimag):
@@ -793,220 +768,16 @@ class GraphSpectralConvS(nn.Module):
             g = gate[:, chan:chan+1, :, :].expand(-1, 1, m, -1)  # (B,1,m,Tsel)
             out_final[:, :, idx, :] = g * out[:, :, idx, :]
 
-        #可视化（仅 eval 时执行）
-        if  self.training:
-            try:
-                with torch.no_grad():
-                    self._maybe_collect_viz(time_feats, eigvals, epoch_or_step=-1, tag='auto')
-            except Exception:
-                pass
-
         apply_gate(neg_idx, 0)
         apply_gate(low_idx, 1)
         apply_gate(mid_idx, 2)
         apply_gate(high_idx, 3)
-
-    #    ---------- 每 step 写一个独立 npz 文件（仅 eval 且 enable_trace 时） ----------
-        if self.training and getattr(self, "enable_trace", False):
-            # 维护 global step（如果你希望 eval 时也统计）
-            self._global_step = getattr(self, "_global_step", 0) + 1
-
-            if (self._global_step % max(1, getattr(self, "trace_every", 1)) == 0):
-                try:
-                    with torch.no_grad():
-                        self._dump_step_npz(
-                            vh=vh, out_pre=out, out_post=out_final, gate=gate,
-                            tf_reim=tf_reim, eigvals=eigvals,
-                            neg_idx=neg_idx, low_idx=low_idx, mid_idx=mid_idx, high_idx=high_idx,
-                            Tsel=Tsel
-                        )
-                except Exception as e:
-                    print(f"[tgssp-trace] npz dump failed at step {self._global_step}: {e}")
 
         return out_final
 
     def forward(self, vh, eigvecs=None, eigvals=None, time_feats=None):
         assert eigvals is not None, "eigvals must be provided"
         return self.spectral_conv(vh, eigvals, time_feats)
-
-    # ===================== 每 step 独立 npz 存储 =====================
-
-    @staticmethod
-    def _band_energy(inp: torch.Tensor, idx: torch.Tensor, Tsel: int):
-        if idx.numel() == 0:
-            return torch.zeros(inp.size(0), Tsel, device=inp.device, dtype=inp.real.dtype)
-        x = inp[:, :, idx, :Tsel]  # (B, Cin/Cout, m, Tsel)
-        e = (x.real.pow(2) + x.imag.pow(2)).sum(dim=(1, 2))  # (B, Tsel)
-        return e
-
-    def _dump_step_npz(self, vh, out_pre, out_post, gate, tf_reim, eigvals,
-                       neg_idx, low_idx, mid_idx, high_idx, Tsel):
-        device = vh.device
-        B = vh.size(0)
-
-        # 抽样 batch 索引（均匀采样）
-        bmax = min(self.trace_bmax, B)
-        if bmax <= 0:
-            return
-        if B <= bmax:
-            b_sel = torch.arange(B, device=device)
-        else:
-            grid = torch.linspace(0, B - 1, steps=bmax, device=device)
-            b_sel = torch.round(grid).long().unique()
-        Bsel = int(b_sel.numel())
-
-        # 构建各项（全部用“真实尺寸”，不做 pad，彻底避免广播/维度不一致）
-        neg_idx_np = neg_idx.detach().cpu().numpy()
-        low_idx_np = low_idx.detach().cpu().numpy()
-        mid_idx_np = mid_idx.detach().cpu().numpy()
-        high_idx_np = high_idx.detach().cpu().numpy()
-        eigvals_np = eigvals.detach().float().cpu().numpy()
-
-        band_code = np.zeros((self.K,), dtype=np.int8)
-        band_code[neg_idx_np] = 1
-        band_code[low_idx_np] = 2
-        band_code[mid_idx_np] = 3
-        band_code[high_idx_np] = 4
-
-        # gate: (Bsel, 4, Tsel)
-        gate_np = gate[:, :, 0, :].detach().float().cpu().numpy()
-        gate_np = gate_np[b_sel.cpu().numpy()]
-
-        # energies: (Bsel, 4, Tsel)
-        Ein = torch.stack([
-            self._band_energy(vh, neg_idx, Tsel),
-            self._band_energy(vh, low_idx, Tsel),
-            self._band_energy(vh, mid_idx, Tsel),
-            self._band_energy(vh, high_idx, Tsel),
-        ], dim=1)
-        Eout_pre = torch.stack([
-            self._band_energy(out_pre, neg_idx, Tsel),
-            self._band_energy(out_pre, low_idx, Tsel),
-            self._band_energy(out_pre, mid_idx, Tsel),
-            self._band_energy(out_pre, high_idx, Tsel),
-        ], dim=1)
-        Eout_post = torch.stack([
-            self._band_energy(out_post, neg_idx, Tsel),
-            self._band_energy(out_post, low_idx, Tsel),
-            self._band_energy(out_post, mid_idx, Tsel),
-            self._band_energy(out_post, high_idx, Tsel),
-        ], dim=1)
-
-        Ein_np = Ein[b_sel][:, :, :Tsel].detach().float().cpu().numpy()
-        Eout_pre_np = Eout_pre[b_sel][:, :, :Tsel].detach().float().cpu().numpy()
-        Eout_post_np = Eout_post[b_sel][:, :, :Tsel].detach().float().cpu().numpy()
-
-        # 非平稳性代理：var(diff)/var(level) -> (Bsel,4)
-        def ns_ratio_row(e_np):
-            if e_np.size < 2:
-                return np.float32(0.0)
-            v_level = np.var(e_np.astype(np.float64))
-            v_diff = np.var(np.diff(e_np.astype(np.float64)))
-            return np.float32(v_diff / (v_level + 1e-12))
-        nsr = np.zeros((Bsel, 4), dtype=np.float32)
-        for bi in range(Bsel):
-            for k in range(4):
-                nsr[bi, k] = ns_ratio_row(Ein_np[bi, k])
-
-        # time features（可选）：(Bsel, Tsel, 2F)
-        if self.store_time_feats:
-            if tf_reim is not None:
-                tf_np = tf_reim[b_sel][:, :Tsel].detach().float().cpu().numpy()
-            else:
-                tf_np = np.zeros((Bsel, Tsel, self.time_feat_dim * 2), dtype=np.float32)
-        else:
-            tf_np = None
-
-        # 内核时间能量（4, Tsel）
-        def l2_over(ten, dims):
-            return torch.sqrt(torch.clamp((ten.abs() ** 2).sum(dim=dims), min=1e-12))
-        W_low_c  = self._to_complex(self.w_low[..., :Tsel])
-        W_neg_c  = self._to_complex(self.w_neg[..., :Tsel])
-        W_mid_c  = self._to_complex(self.w_mid[..., :Tsel])
-        W_high_c = self._to_complex(self.w_high[..., :Tsel])
-
-        En_neg_t = l2_over(W_neg_c, dims=(0, 1)).detach().float().cpu().numpy()
-        En_mid_t = l2_over(W_mid_c, dims=(0, 1)).detach().float().cpu().numpy()
-        En_high_t = l2_over(W_high_c, dims=(0, 1)).detach().float().cpu().numpy()
-        if self.low_k > 0:
-            En_low_t = l2_over(W_low_c, dims=(0, 1, 2)).detach().float().cpu().numpy()
-        else:
-            En_low_t = np.zeros((Tsel,), dtype=np.float32)
-        kernel_energy = np.stack([En_neg_t, En_low_t, En_mid_t, En_high_t], axis=0)  # (4, Tsel)
-
-        # alpha（两种：使用到的长度，以及全量长度）
-        alpha_mid_used = np.array([], dtype=np.float32)
-        alpha_high_used = np.array([], dtype=np.float32)
-        if mid_idx.numel() > 0 and self.alpha_mid_raw is not None:
-            alpha_mid_used = F.softplus(self.alpha_mid_raw)[: mid_idx.numel()].detach().float().cpu().numpy()
-        if high_idx.numel() > 0 and self.alpha_high_raw is not None:
-            alpha_high_used = F.softplus(self.alpha_high_raw)[: high_idx.numel()].detach().float().cpu().numpy()
-        alpha_mid_all = F.softplus(self.alpha_mid_raw).detach().float().cpu().numpy() if self.alpha_mid_raw is not None else np.array([], dtype=np.float32)
-        alpha_high_all = F.softplus(self.alpha_high_raw).detach().float().cpu().numpy() if self.alpha_high_raw is not None else np.array([], dtype=np.float32)
-
-        valid_counts = np.array([
-            int(Bsel), int(Tsel),
-            int(neg_idx.numel()), int(low_idx.numel()),
-            int(mid_idx.numel()), int(high_idx.numel())
-        ], dtype=np.int32)
-
-        # 组织要写入的 dict（全部为“本次 step 的真实尺寸”）
-        flat = {
-            # meta
-            "meta/step": np.array(self._global_step, dtype=np.int64),
-            "meta/Bsel": np.array(Bsel, dtype=np.int32),
-            "meta/Tsel": np.array(Tsel, dtype=np.int32),
-            "meta/K": np.array(self.K, dtype=np.int32),
-            "meta/Cin": np.array(self.Cin, dtype=np.int32),
-            "meta/Cout": np.array(self.Cout, dtype=np.int32),
-            "meta/low_k": np.array(self.low_k, dtype=np.int32),
-            "meta/mid_k": np.array(self.mid_k, dtype=np.int32),
-            "meta/high_k": np.array(self.high_k, dtype=np.int32),
-
-            # bands
-            "bands/eigvals": eigvals_np.astype(np.float32),
-            "bands/neg_idx": neg_idx_np,
-            "bands/low_idx": low_idx_np,
-            "bands/mid_idx": mid_idx_np,
-            "bands/high_idx": high_idx_np,
-            "bands/band_code": np.array([band_code], dtype=np.int8).squeeze(0),  # (K,)
-
-            # stats
-            "gate": gate_np,                  # (Bsel,4,Tsel)
-            "Ein": Ein_np,                    # (Bsel,4,Tsel)
-            "Eout_pre": Eout_pre_np,          # (Bsel,4,Tsel)
-            "Eout_post": Eout_post_np,        # (Bsel,4,Tsel)
-            "ns_ratio": nsr,                  # (Bsel,4)
-            "kernel_energy": kernel_energy,   # (4,Tsel)
-
-            # alpha
-            "alpha/mid_used": alpha_mid_used,     # (n_mid_used,)
-            "alpha/high_used": alpha_high_used,   # (n_high_used,)
-            "alpha/mid_all": alpha_mid_all,       # (mid_k,)
-            "alpha/high_all": alpha_high_all,     # (high_k,)
-
-            "valid_counts": valid_counts
-        }
-        if self.store_time_feats:
-            if tf_reim is not None:
-                flat["time_feats_used"] = tf_np  # (Bsel,Tsel,2F)
-
-        # 写入 step 文件（原子写 -> rename）
-        step_name = f"{self.trace_prefix}_{self._global_step:06d}.npz"
-        out_path = Path(self.step_dir) / step_name
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with tempfile.NamedTemporaryFile(delete=False, dir=str(out_path.parent), suffix=".npz") as tmp:
-                np.savez_compressed(tmp, **flat)
-                tmp_path = tmp.name
-            os.replace(tmp_path, str(out_path))
-            print(f"[tgssp-trace] npz saved: {out_path.name} (Bsel={Bsel}, Tsel={Tsel})")
-        except Exception as e:
-            # 回退方案：直接写（非原子）
-            print(f"[tgssp-trace] atomic save failed ({e}), fallback to direct save.")
-            np.savez_compressed(str(out_path), **flat)
-
-
 
 class GraphSpectralConvT(GraphSpectralConvS):
     def __init__(
