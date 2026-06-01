@@ -1,5 +1,6 @@
 import torch
 import numpy as np
+import time
 from src.base.engine import BaseEngine
 from src.utils.metrics import masked_mape, masked_rmse
 
@@ -20,7 +21,11 @@ class MONET_Engine(BaseEngine):
         train_mape = []
         train_rmse = []
         self._dataloader['train_loader'].shuffle()
-        for X, label in self._dataloader['train_loader'].get_iterator():
+        total_batches = self._dataloader['train_loader'].num_batch
+        log_every = max(1, min(100, total_batches // 10))
+        epoch_start = time.time()
+        for batch_idx, (X, label) in enumerate(self._dataloader['train_loader'].get_iterator(), start=1):
+            batch_start = time.time()
             self._optimizer.zero_grad()
             X, label = self._to_device(self._to_tensor([X, label]))
             # # 获取节点数量 N（假设 X 形状为 [B, N, ...]）
@@ -73,5 +78,13 @@ class MONET_Engine(BaseEngine):
             train_loss.append(loss.item())
             train_mape.append(mape)
             train_rmse.append(rmse)
+
+            if batch_idx == 1 or batch_idx % log_every == 0 or batch_idx == total_batches:
+                elapsed = time.time() - epoch_start
+                self._logger.info(
+                    'Train batch %d/%d, Loss: %.4f, RMSE: %.4f, MAPE: %.4f, Batch Time: %.2fs, Elapsed: %.2fs',
+                    batch_idx, total_batches, train_loss[-1], train_rmse[-1], train_mape[-1],
+                    time.time() - batch_start, elapsed
+                )
         #writer.close()
         return np.mean(train_loss), np.mean(train_mape), np.mean(train_rmse)

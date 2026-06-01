@@ -2,8 +2,6 @@ import os
 import pickle
 import torch
 import numpy as np
-import threading
-import multiprocessing as mp
 from pathlib import Path
 
 class DataLoader(object):
@@ -33,12 +31,6 @@ class DataLoader(object):
         self.idx = idx
 
 
-    def write_to_shared_array(self, x, y, idx_ind, start_idx, end_idx):
-        for i in range(start_idx, end_idx):
-            x[i] = self.data[idx_ind[i] + self.x_offsets, :, :]
-            y[i] = self.data[idx_ind[i] + self.y_offsets, :, :1]
-
-
     def get_iterator(self):
         self.current_ind = 0
 
@@ -46,29 +38,10 @@ class DataLoader(object):
             while self.current_ind < self.num_batch:
                 start_ind = self.bs * self.current_ind
                 end_ind = min(self.size, self.bs * (self.current_ind + 1))
-                idx_ind = self.idx[start_ind: end_ind, ...]
+                idx_ind = np.asarray(self.idx[start_ind: end_ind]).reshape(-1)
 
-                x_shape = (len(idx_ind), self.seq_len, self.data.shape[1], self.data.shape[-1])
-                x_shared = mp.RawArray('f', int(np.prod(x_shape)))
-                x = np.frombuffer(x_shared, dtype='f').reshape(x_shape)
-
-                y_shape = (len(idx_ind), self.horizon, self.data.shape[1], 1)
-                y_shared = mp.RawArray('f', int(np.prod(y_shape)))
-                y = np.frombuffer(y_shared, dtype='f').reshape(y_shape)
-
-                array_size = len(idx_ind)
-                num_threads = max(1, len(idx_ind) // 2)
-                chunk_size = array_size // num_threads
-                threads = []
-                for i in range(num_threads):
-                    start_index = i * chunk_size
-                    end_index = start_index + chunk_size if i < num_threads - 1 else array_size
-                    thread = threading.Thread(target=self.write_to_shared_array, args=(x, y, idx_ind, start_index, end_index))
-                    thread.start()
-                    threads.append(thread)
-
-                for thread in threads:
-                    thread.join()
+                x = self.data[idx_ind[:, None] + self.x_offsets[None, :], :, :]
+                y = self.data[idx_ind[:, None] + self.y_offsets[None, :], :, :1]
 
                 yield (x, y)
                 self.current_ind += 1

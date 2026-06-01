@@ -8,7 +8,7 @@ def get_public_config():
     parser.add_argument('--model_name', type=str, default='monet')
     parser.add_argument('--seed', type=int, default=2023)
 
-    parser.add_argument('--bs', type=int, default=4)
+    parser.add_argument('--bs', type=int, default=64)
     # seq_len denotes input history length, horizon denotes output future length
     parser.add_argument('--seq_len', type=int, default=12)
     parser.add_argument('--horizon', type=int, default=12)

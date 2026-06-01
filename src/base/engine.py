@@ -56,10 +56,15 @@ class BaseEngine():
             return tensors.detach().cpu().numpy()
 
     def _to_tensor(self, nparray):
+        def to_tensor(array):
+            if isinstance(array, np.ndarray):
+                return torch.from_numpy(array).float()
+            return torch.tensor(array, dtype=torch.float32)
+
         if isinstance(nparray, list):
-            return [torch.tensor(array, dtype=torch.float32) for array in nparray]
+            return [to_tensor(array) for array in nparray]
         else:
-            return torch.tensor(nparray, dtype=torch.float32)
+            return to_tensor(nparray)
 
     def _inverse_transform(self, tensors):
         def inv(tensor):
@@ -142,10 +147,10 @@ class BaseEngine():
                 cur_lr = self._lr_scheduler.get_last_lr()[0]
                 self._lr_scheduler.step()
 
-            # message = 'Epoch: {:03d}, Train Loss: {:.4f}, Train RMSE: {:.4f}, Train MAPE: {:.4f}, Valid Loss: {:.4f}, Valid RMSE: {:.4f}, Valid MAPE: {:.4f}, Train Time: {:.4f}s/epoch, Valid Time: {:.4f}s, LR: {:.4e}'
-            # self._logger.info(message.format(epoch + 1, mtrain_loss, mtrain_rmse, mtrain_mape, \
-            #                                  mvalid_loss, mvalid_rmse, mvalid_mape, \
-            #                                  (t2 - t1), (v2 - v1), cur_lr))
+            message = 'Epoch: {:03d}, Train Loss: {:.4f}, Train RMSE: {:.4f}, Train MAPE: {:.4f}, Valid Loss: {:.4f}, Valid RMSE: {:.4f}, Valid MAPE: {:.4f}, Train Time: {:.4f}s/epoch, Valid Time: {:.4f}s, LR: {:.4e}'
+            self._logger.info(message.format(epoch + 1, mtrain_loss, mtrain_rmse, mtrain_mape, \
+                                             mvalid_loss, mvalid_rmse, mvalid_mape, \
+                                             (t2 - t1), (v2 - v1), cur_lr))
 
             if mvalid_loss < min_loss:
                 # self.save_model(self._save_path)
@@ -167,7 +172,10 @@ class BaseEngine():
         preds = []
         labels = []
         with torch.no_grad():
-            for X, label in self._dataloader[mode + '_loader'].get_iterator():
+            total_batches = self._dataloader[mode + '_loader'].num_batch
+            log_every = max(1, min(100, total_batches // 10))
+            eval_start = time.time()
+            for batch_idx, (X, label) in enumerate(self._dataloader[mode + '_loader'].get_iterator(), start=1):
                 # X (b, t, n, f), label (b, t, n, 1)
                 X, label = self._to_device(self._to_tensor([X, label]))
                 mask_idx = self.mask_idx.to(X.device)
@@ -178,6 +186,11 @@ class BaseEngine():
 
                 preds.append(pred.squeeze(-1).cpu())
                 labels.append(label.squeeze(-1).cpu())
+                if batch_idx == 1 or batch_idx % log_every == 0 or batch_idx == total_batches:
+                    self._logger.info(
+                        '%s batch %d/%d, Elapsed: %.2fs',
+                        mode.capitalize(), batch_idx, total_batches, time.time() - eval_start
+                    )
 
         preds = torch.cat(preds, dim=0)
         labels = torch.cat(labels, dim=0)
