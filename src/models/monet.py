@@ -95,20 +95,21 @@ class MoNet(BaseModel):
         num_conditon = 3
         self.fea_dim = input_dim - 2
 
-        # if self.corvar_dim >1:
-        #     self.time_interval = 8
-        #     num_conditon = 5
-        #     self.fea_dim = input_dim - 4
-        #     self.side_encoding = nn.Sequential(
-        #         nn.Conv2d(in_channels=self.corvar_dim * seq_len, out_channels=emd_dim*seq_len, kernel_size=(1, 1), bias=True),
-        #         self.activation,
-        #         nn.Dropout(p=0.15),
-        #         MultiLayerPerceptron(emd_dim*seq_len, emd_dim*seq_len)
-        #     )
         if self.corvar_dim > 1:
             self.time_interval = 8
             num_conditon = 5
             self.fea_dim = input_dim - 4
+            self.side_encoding = nn.Sequential(
+                nn.Conv2d(
+                    in_channels=self.corvar_dim * seq_len,
+                    out_channels=emd_dim * seq_len,
+                    kernel_size=(1, 1),
+                    bias=True,
+                ),
+                self.activation,
+                nn.Dropout(p=0.15),
+                MultiLayerPerceptron(emd_dim * seq_len, emd_dim * seq_len),
+            )
 
         self.hidden_dim = self.emd_dim//2*num_conditon+emd_dim
 
@@ -176,12 +177,11 @@ class MoNet(BaseModel):
 
         self.output_fusion = nn.Sequential(
             #phy,sptial,side_embeding
-            #+(self.emd_dim if self.corvar_dim > 1 else 0)
-            nn.Linear(self.hidden_dim//2+1, self.emd_dim),
+            nn.Linear(self.hidden_dim//2+(self.emd_dim if self.corvar_dim > 1 else 0)+1, self.emd_dim),
             self.activation,
             nn.Dropout(p=0.15),
             nn.Linear(self.emd_dim, self.output_dim))
-        #self.res_layer = MultiLayerPerceptron(self.hidden_dim, seq_len)
+        self.res_layer = MultiLayerPerceptron(self.hidden_dim, seq_len)
 
 
 
@@ -256,14 +256,13 @@ class MoNet(BaseModel):
         #X_phy = self.Field(fea.transpose(1, 2)).transpose(1, 2)
         #return X_phy
         X_exdif = self.SptialModule(mix_X,self.A).repeat(1,1,1,len).transpose(1,3)
-        #x_res = self.res_layer(mix_X)
-        # if self.corvar_dim > 0:
-        #     convar = input[:,:,:,1:self.corvar_dim+1]
-        #     x_side = self.side_encoding(convar.reshape(batch,-1,nodes,1))
-        #     x_side = x_side.reshape(batch,len,nodes,-1)
-        #     #x_res = x_res + x_side
-        #     y_hat = self.output_fusion(torch.cat((X_phy,X_exdif,x_side),dim=-1))+self.activation(x_res)
-        # else:
-        y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))
+        x_res = self.res_layer(mix_X)
+        if self.corvar_dim > 1:
+            convar = input[:,:,:,1:self.corvar_dim+1]
+            x_side = self.side_encoding(convar.reshape(batch,-1,nodes,1))
+            x_side = x_side.reshape(batch,len,nodes,-1)
+            y_hat = self.output_fusion(torch.cat((X_phy,X_exdif,x_side),dim=-1))+self.activation(x_res)
+        else:
+            y_hat = self.output_fusion(torch.cat((X_phy,X_exdif),dim=-1))
         return y_hat
 

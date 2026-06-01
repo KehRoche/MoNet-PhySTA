@@ -129,6 +129,7 @@ class BaseEngine():
 
         wait = 0
         min_loss = np.inf
+        best_state = None
 
 
         for epoch in range(self._max_epochs):
@@ -156,12 +157,20 @@ class BaseEngine():
                 # self.save_model(self._save_path)
                 self._logger.info('Val loss decrease from {:.4f} to {:.4f}'.format(min_loss, mvalid_loss))
                 min_loss = mvalid_loss
+                best_state = {
+                    key: value.detach().cpu().clone()
+                    for key, value in self.model.state_dict().items()
+                }
                 wait = 0
             else:
                 wait += 1
                 if wait == self._patience:
                     self._logger.info('Early stop at epoch {}, loss = {:.6f}'.format(epoch + 1, min_loss))
                     break
+        if best_state is not None:
+            self.model.load_state_dict(best_state)
+            self.model.to(self._device)
+            self._logger.info('Loaded best validation model, loss = {:.6f}'.format(min_loss))
         loss = self.evaluate('test', swanlab_run)
         return loss
 
