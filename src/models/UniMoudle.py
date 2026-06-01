@@ -256,6 +256,7 @@ def compute_laplacian(adj_matrix):
     :return: 特征向量和特征值
     """
     # 判断是否为无向图（邻接矩阵对称）
+    adj_matrix = adj_matrix.detach().to(device="cpu", dtype=torch.get_default_dtype())
     is_undirected = torch.allclose(adj_matrix, adj_matrix.T, atol=1e-6)
 
     if is_undirected:
@@ -283,7 +284,7 @@ def _compute_directed_laplacian(A, q=0.25, normalized=True, deg_mode='herm', eps
     """
     计算有向图的磁性拉普拉斯矩阵（保留原逻辑）
     """
-    A = A.to(dtype=torch.get_default_dtype())
+    A = A.to(device="cpu", dtype=torch.get_default_dtype())
     device = A.device
     N = A.shape[0]
 
@@ -291,9 +292,9 @@ def _compute_directed_laplacian(A, q=0.25, normalized=True, deg_mode='herm', eps
     S = torch.sign(diff)
     base = float(q) * math.pi
     phi = base * S
-    P = torch.exp(1j * phi)
+    P = torch.complex(torch.cos(phi), torch.sin(phi))
 
-    A_complex = A * P
+    A_complex = A.to(P.dtype) * P
     H = 0.5 * (A_complex + A_complex.conj().T)
     H = 0.5 * (H + H.conj().T)
 
