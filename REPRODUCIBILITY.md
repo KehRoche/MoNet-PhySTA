@@ -47,6 +47,14 @@ The supported input dimensions are fixed:
 
 The entrypoint overrides `--input_dim` from this mapping to avoid invalid covariate layouts.
 
+Check the local dataset files before launching long runs:
+
+```bash
+python scripts/check_data.py --datasets PEMS-BAY SD KnowAir BJAir
+```
+
+This verifies required files, `his.npz` keys, data shape, node count, feature dimension, index ranges for `seq_len=12` and `horizon=12`, and adjacency matrix shape. Boundary-only index issues are reported as warnings because the runtime DataLoader filters those samples.
+
 ## Recommended Reproduction Runner
 
 Long-running experiments should be launched manually in your own terminal. Run all Table 1 datasets:
@@ -165,9 +173,11 @@ python experiments/monet/main.py --dataset BJAir --device cuda:0 --bs 32 --seq_l
 ## Release Checklist
 
 - Verify `python -m py_compile` passes for `src` and `experiments`.
+- Run `python scripts/check_data.py --datasets PEMS-BAY SD KnowAir BJAir` on the local machine that has the datasets.
 - Run `python experiments/monet/run_best_experiments.py --dry_run`.
 - Run `python scripts/summarize_results.py --no_write`.
 - Run `python scripts/validate_release.py`.
+- Optionally run `python scripts/validate_release.py --check_data` when local datasets are present.
 - Manually rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
 - After manually rerunning PEMS-BAY, run `python scripts/validate_release.py --strict_results`. This verifies provenance, not exact metric equality.
 - Confirm datasets are documented but not committed.

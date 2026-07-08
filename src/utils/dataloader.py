@@ -6,6 +6,21 @@ from pathlib import Path
 
 class DataLoader(object):
     def __init__(self, data, idx, seq_len, horizon, bs, logger, pad_last_sample=False):
+        idx = np.asarray(idx).reshape(-1)
+        valid_mask = (idx - seq_len + 1 >= 0) & (idx + horizon < data.shape[0])
+        if not np.all(valid_mask):
+            invalid_count = int(np.size(idx) - np.count_nonzero(valid_mask))
+            logger.warning(
+                'Filtered %d invalid temporal indices for seq_len=%d, horizon=%d, data length=%d',
+                invalid_count,
+                seq_len,
+                horizon,
+                data.shape[0],
+            )
+            idx = idx[valid_mask]
+            if idx.size == 0:
+                raise ValueError('No valid temporal indices remain after filtering.')
+
         if pad_last_sample:
             num_padding = (bs - (len(idx) % bs)) % bs
             idx_padding = np.repeat(idx[-1:], num_padding, axis=0)

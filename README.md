@@ -61,6 +61,12 @@ Supported dataset keys and required input dimensions:
 
 `input_dim` is selected automatically from the dataset name in `experiments/monet/main.py`. This is intentional: traffic datasets use value/time features, while air-quality datasets include additional covariates.
 
+Before running long experiments, validate the local files and shapes:
+
+```bash
+python scripts/check_data.py --datasets PEMS-BAY SD KnowAir BJAir
+```
+
 ## Quick Smoke Test
 
 Use this only to verify that the environment and data are wired correctly:
@@ -151,5 +157,6 @@ python experiments/monet/main.py \
 - The directed Laplacian eigendecomposition is initialized on CPU to avoid CUDA complex-kernel compatibility issues.
 - Air-quality datasets require the covariate side branch in `src/models/monet.py`; do not remove it when simplifying the model.
 - Run `python scripts/validate_release.py` before publishing to check required files, Python syntax, reproduction dry-run, and accidental tracked artifacts.
+- Run `python scripts/validate_release.py --check_data` on the machine that has the datasets to include local data integrity checks.
 - Run `python scripts/validate_release.py --strict_results` after manually completing final Table 1 reruns to ensure paper datasets were evaluated with best-validation-state reload. This check validates result provenance, not exact metric equality.
 - The repository currently includes an MIT license; replace it before release if a different license is required.

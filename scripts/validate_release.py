@@ -13,6 +13,7 @@ REQUIRED_FILES = [
     "requirements.txt",
     "experiments/monet/main.py",
     "experiments/monet/run_best_experiments.py",
+    "scripts/check_data.py",
     "scripts/summarize_results.py",
     "scripts/validate_release.py",
     "src/models/monet.py",
@@ -112,6 +113,12 @@ def check_result_summary(errors, strict_results=False):
         errors.append("Result summary script failed:\n" + result.stdout)
 
 
+def check_local_data(errors):
+    result = run([sys.executable, "scripts/check_data.py"])
+    if result.returncode != 0:
+        errors.append("Local dataset check failed:\n" + result.stdout)
+
+
 def check_license(warnings):
     if not any((REPO_ROOT / name).exists() for name in ["LICENSE", "LICENSE.md", "LICENSE.txt"]):
         warnings.append("No LICENSE file found. Add one before publishing publicly.")
@@ -125,6 +132,11 @@ def main():
         action="store_true",
         help="Require latest paper-dataset runs to include best-validation reload logs; does not enforce metric equality.",
     )
+    parser.add_argument(
+        "--check_data",
+        action="store_true",
+        help="Also validate local dataset files. This is off by default because datasets are not tracked in git.",
+    )
     args = parser.parse_args()
 
     errors = []
@@ -135,6 +147,8 @@ def main():
     if not args.skip_dry_run:
         check_dry_run(errors)
     check_result_summary(errors, strict_results=args.strict_results)
+    if args.check_data:
+        check_local_data(errors)
     check_license(warnings)
 
     for warning in warnings:
