@@ -1,13 +1,5 @@
-import numpy as np
 import torch
 import torch.nn as nn
-from sympy.abc import alpha
-import torch.nn.functional as F
-import math
-import random
-from .base import *
-from einops import rearrange, repeat
-from typing import Optional, Tuple, Sequence,List,Union
 
 
 class GraphSpectralConvS_Nystrom(nn.Module):
@@ -192,6 +184,7 @@ class NyFNO2d(nn.Module):
             num_spectral_layers: int = 4,
             latent_steps: int = None,
             out_steps: int = None,
+            debug: bool = False,
             **kwargs
     ):
         super().__init__()
@@ -199,6 +192,7 @@ class NyFNO2d(nn.Module):
         self.N = N
         self.width = width
         self.nystrom_rank = nystrom_rank
+        self.debug = debug
 
         # --- Lifting Operator (修复：不再降采样) ---
         self.lifting_operator = LiftingOperator(
@@ -209,6 +203,7 @@ class NyFNO2d(nn.Module):
             input_shape=(N, T),
             latent_steps=latent_steps,
             nystrom_rank=nystrom_rank,
+            debug=debug,
             **kwargs
         )
 
@@ -225,7 +220,8 @@ class NyFNO2d(nn.Module):
                     modes_t=modes_t,
                     approximation_rank=nystrom_rank,
                     out_steps=T if out_steps is None else out_steps,
-                    bias=True
+                    bias=True,
+                    debug=debug,
                 )
                 for _ in range(processing_layers)
             ]
@@ -254,9 +250,11 @@ class NyFNO2d(nn.Module):
         # 2. 注入主干层
         for idx, layer in enumerate(self.spectral_conv):
             layer.set_basis(U_approx)
-            print(f"[GTFNO2d] Basis injected into spectral_conv[{idx}]")
+            if self.debug:
+                print(f"[GTFNO2d] Basis injected into spectral_conv[{idx}]")
 
-        print(f"[GTFNO2d] Total: Basis injected into {1 + len(self.spectral_conv)} layers")
+        if self.debug:
+            print(f"[GTFNO2d] Total: Basis injected into {1 + len(self.spectral_conv)} layers")
 
     def forward(self, x):
         """
@@ -285,7 +283,9 @@ class NyFNO2d(nn.Module):
         # 3. 输出
         x = self.final_proj(x)  # [B, 1, N, T]
 
-        return x.permute(0, 2,3,1)
+        return x.permute(0, 2, 3, 1)
+
+
 class MLP(nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, dropout=0.0):
         super().__init__()
@@ -320,12 +320,14 @@ class LiftingOperator(nn.Module):
             channel_expansion=1,
             nonlinear=True,
             nystrom_rank=64,
+            debug=False,
     ):
         super().__init__()
 
         self.input_channels = input_channels
         self.width = width
         self.N = N
+        self.debug = debug
 
         # 关键修复：sconv 使用完整的 N
         self.sconv = GraphSpectralConvS_Nystrom(
@@ -334,7 +336,8 @@ class LiftingOperator(nn.Module):
             N=N,  # 不再使用 N//4
             modes_t=modes_t,
             approximation_rank=nystrom_rank,
-            bias=True
+            bias=True,
+            debug=debug,
         )
 
         self.activation = activation if nonlinear else nn.Identity()
@@ -342,7 +345,8 @@ class LiftingOperator(nn.Module):
     def set_basis(self, U_approx):
         """接收并传递 Nyström 基"""
         self.sconv.set_basis(U_approx)
-        print(f"[LiftingOperator] Basis injected: N={self.N}")
+        if self.debug:
+            print(f"[LiftingOperator] Basis injected: N={self.N}")
 
     def forward(self, x):
         """

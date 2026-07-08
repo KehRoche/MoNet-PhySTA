@@ -46,6 +46,21 @@ FORBIDDEN_TRACKED_DIR_PARTS = {
     "tgssp_viz",
 }
 
+FORBIDDEN_TRACKED_NAMES = {
+    "abl.py",
+    "alpha_vis.py",
+    "capture.py",
+    "gata_vis.py",
+    "run_exp.py",
+    "vis_tgssp.py",
+}
+
+ALLOWED_DATA_SCRIPT_NAMES = {
+    "generate_adj_mx.py",
+    "generate_data_for_training.py",
+    "generate_training_data.py",
+}
+
 
 def run(command):
     return subprocess.run(
@@ -77,6 +92,10 @@ def check_tracked_files(errors):
             errors.append(f"Large/generated artifact is tracked: {line}")
         if parts & FORBIDDEN_TRACKED_DIR_PARTS:
             errors.append(f"Generated output directory is tracked: {line}")
+        if path.name in FORBIDDEN_TRACKED_NAMES:
+            errors.append(f"Exploratory local script is tracked: {line}")
+        if path.parts and path.parts[0] == "data" and path.suffix == ".py" and path.name not in ALLOWED_DATA_SCRIPT_NAMES:
+            errors.append(f"Unexpected tracked data-side script: {line}")
 
 
 def check_python_compile(errors):
