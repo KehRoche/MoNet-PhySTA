@@ -20,10 +20,12 @@ python scripts/validate_release.py --check_data
 The release validator checks:
 
 - required project files and documentation
-- Python syntax for `src`, `experiments`, and `scripts`
+- Python syntax for git-tracked Python files
 - reproduction-runner dry-run
 - result summarization script
 - accidental tracked datasets, checkpoints, logs, notebooks, visualization outputs, and exploratory scripts
+
+The validator intentionally reasons about git-tracked files for release hygiene. Local ignored notebooks, datasets, logs, and exploratory scripts may exist in a working directory, but they must not be tracked by git.
 
 ## Manual Experiment Gates
 

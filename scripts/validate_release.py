@@ -80,6 +80,13 @@ def run(command):
     )
 
 
+def git_tracked_files():
+    result = run(["git", "-c", f"safe.directory={REPO_ROOT.as_posix()}", "ls-files"])
+    if result.returncode != 0:
+        raise RuntimeError("Unable to list git-tracked files:\n" + result.stdout)
+    return [Path(line) for line in result.stdout.splitlines()]
+
+
 def check_required_files(errors):
     for rel_path in REQUIRED_FILES:
         if not (REPO_ROOT / rel_path).exists():
@@ -87,13 +94,14 @@ def check_required_files(errors):
 
 
 def check_tracked_files(errors):
-    result = run(["git", "-c", f"safe.directory={REPO_ROOT.as_posix()}", "ls-files"])
-    if result.returncode != 0:
-        errors.append("Unable to list git-tracked files:\n" + result.stdout)
+    try:
+        tracked_files = git_tracked_files()
+    except RuntimeError as exc:
+        errors.append(str(exc))
         return
 
-    for line in result.stdout.splitlines():
-        path = Path(line)
+    for path in tracked_files:
+        line = path.as_posix()
         parts = set(path.parts)
         if path.suffix.lower() in FORBIDDEN_TRACKED_SUFFIXES:
             errors.append(f"Large/generated artifact is tracked: {line}")
@@ -106,11 +114,11 @@ def check_tracked_files(errors):
 
 
 def check_python_compile(errors):
-    files = [
-        str(path.relative_to(REPO_ROOT))
-        for base in ["src", "experiments", "scripts"]
-        for path in (REPO_ROOT / base).rglob("*.py")
-    ]
+    try:
+        files = [path.as_posix() for path in git_tracked_files() if path.suffix == ".py"]
+    except RuntimeError as exc:
+        errors.append(str(exc))
+        return
     result = run([sys.executable, "-m", "py_compile", *files])
     if result.returncode != 0:
         errors.append("Python compilation failed:\n" + result.stdout)
