@@ -1,4 +1,5 @@
 import argparse
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -64,6 +65,8 @@ ALLOWED_DATA_SCRIPT_NAMES = {
     "generate_training_data.py",
 }
 
+MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
+
 
 def run(command):
     return subprocess.run(
@@ -110,6 +113,21 @@ def check_python_compile(errors):
     result = run([sys.executable, "-m", "py_compile", *files])
     if result.returncode != 0:
         errors.append("Python compilation failed:\n" + result.stdout)
+
+
+def check_markdown_links(errors):
+    for markdown_file in REPO_ROOT.glob("*.md"):
+        text = markdown_file.read_text(encoding="utf-8")
+        for match in MARKDOWN_LINK_PATTERN.finditer(text):
+            target = match.group(1).strip()
+            if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            target = target.split("#", 1)[0]
+            if not target:
+                continue
+            if not (markdown_file.parent / target).exists():
+                rel_file = markdown_file.relative_to(REPO_ROOT)
+                errors.append(f"Broken markdown link in {rel_file}: {match.group(1)}")
 
 
 def check_dry_run(errors):
@@ -166,6 +184,7 @@ def main():
     check_required_files(errors)
     check_tracked_files(errors)
     check_python_compile(errors)
+    check_markdown_links(errors)
     if not args.skip_dry_run:
         check_dry_run(errors)
     check_result_summary(errors, strict_results=args.strict_results)
