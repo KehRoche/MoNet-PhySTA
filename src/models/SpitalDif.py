@@ -2,12 +2,7 @@ import torch
 import torch.nn as nn
 from collections import defaultdict
 
-from sympy import false
-
-
-import torch
 import torch.nn.functional as F
-from torch import nn
 import networkx as nx
 import community as community_louvain
 from torch_geometric.utils import dense_to_sparse
@@ -27,7 +22,6 @@ class MSKGN(nn.Module):
         super().__init__()
         self.levels = levels
         self.topk = topk
-        self.vis = false
         # down / mid / up 三组卷积列表
         self.conv_down = nn.ModuleList()
         self.conv_mid  = nn.ModuleList()
@@ -154,7 +148,6 @@ class MSKGN(nn.Module):
         # 多尺度图预处理
         mg = self.mg
         # clusters, edge_down/mid/up 各为-length lists
-        features = {'input': x}
         # V-Cycle 消息传递
         for l in range(self.levels):
             ei, ew = mg['edge_down'][0]
@@ -165,40 +158,18 @@ class MSKGN(nn.Module):
             for node, comm in self.part.items():
                 center = self.center[comm]  # 找到当前节点所属社区的中心节点
                 x_l[:,node,:] = msg[:,center,:]  # 将中心节点特征映射给该节点
-            features[f'down_l{l}'] = x_l
             # 同层 mid
             ei_m, ew_m = mg['edge_mid'][0]
             x_m = self.conv_mid[l](x, ei_m, ew_m)
             #x_m = F.relu(x_m)
-            features[f'mid_l{l}'] = x_m
 
             # up-scale
             ei_u, ew_u = mg['edge_up'][0]
             x_up = self.conv_up[l](x, ei_u, ew_u)
             #x_up = F.relu(x_up)
-            features[f'up_l{l}'] = x_up
 
             concat = torch.cat([x, x_l, x_m,x_up], dim=-1)  # [B,N,F+3H]
             x = self.projs(concat)
-        if self.vis:
-            # Select a batch and node to visualize
-            batch_idx = 0
-            first_ei = mg['edge_down'][l][0]
-            # pick first source node
-            node_idx = int(first_ei[0,0].item())
-            import matplotlib.pyplot as plt
-            # Plot feature values across stages
-            stages = list(features.keys())
-            plt.figure(figsize=(15,5))
-            for stage in stages:
-                feat_vec = features[stage][batch_idx, node_idx, :].detach().cpu().numpy()
-                plt.plot(range(dim), feat_vec, label=stage)
-
-            plt.title(f'Feature Evolution for B={batch_idx}, Node={node_idx}')
-            plt.xlabel('Feature Dimension')
-            plt.ylabel('Feature Value')
-            plt.legend()
-            plt.show()
         # 最终投影回一维输出
         return  x.unsqueeze(-1).transpose(1, 2)
 

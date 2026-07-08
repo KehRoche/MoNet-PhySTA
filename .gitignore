@@ -22,6 +22,8 @@ Thumbs.db
 eval/
 exp_vis/
 screenshots/
+output/
+.reasonix/
 experiments/monet/tgssp_analysis/
 experiments/monet/tgssp_analysis_alpha/
 experiments/monet/tgssp_trace/

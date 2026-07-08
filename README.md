@@ -142,4 +142,5 @@ python experiments/monet/main.py \
 - The training engine reloads the best validation state before final test evaluation.
 - The directed Laplacian eigendecomposition is initialized on CPU to avoid CUDA complex-kernel compatibility issues.
 - Air-quality datasets require the covariate side branch in `src/models/monet.py`; do not remove it when simplifying the model.
+- Run `python scripts/validate_release.py` before publishing to check required files, Python syntax, reproduction dry-run, and accidental tracked artifacts.
 - Add a license file before public release if this repository will be published externally.

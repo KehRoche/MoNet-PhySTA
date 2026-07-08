@@ -145,6 +145,7 @@ python experiments/monet/main.py --dataset BJAir --device cuda:0 --bs 32 --seq_l
 
 - Verify `python -m py_compile` passes for `src` and `experiments`.
 - Run `python experiments/monet/run_best_experiments.py --dry_run`.
+- Run `python scripts/validate_release.py`.
 - Rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
 - Confirm datasets are documented but not committed.
 - Add a license file before public release.

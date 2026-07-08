@@ -106,7 +106,7 @@ class BaseEngine():
             if label.min() < 1:
                 mask_value = label.min()
             if self._iter_cnt == 0:
-                print('Check mask value', mask_value)
+                self._logger.info('Mask value: %s', mask_value)
 
             loss = self._loss_fn(pred, label, mask_value)
             mape = masked_mape(pred, label, mask_value).item()
@@ -204,11 +204,6 @@ class BaseEngine():
         preds = torch.cat(preds, dim=0)
         labels = torch.cat(labels, dim=0)
 
-        # combined = torch.cat((preds, labels), dim=-1)
-        # combined_np = combined.numpy()
-        # print("save done")
-        # np.savez('PD_data.npz', data=combined_np)
-
         # handle the precision issue when performing inverse transform to label
         mask_value = torch.tensor(0)
         if labels.min() < 1:
@@ -224,7 +219,7 @@ class BaseEngine():
             test_mae = []
             test_mape = []
             test_rmse = []
-            print('Check mask value', mask_value)
+            self._logger.info('Mask value: %s', mask_value)
             for i in range(self.model.horizon):
                 res = compute_all_metrics(preds[:, i, :], labels[:, i, :], mask_value)
                 log = 'Horizon {:d}, Test MAE: {:.4f}, Test RMSE: {:.4f}, Test MAPE: {:.4f}'

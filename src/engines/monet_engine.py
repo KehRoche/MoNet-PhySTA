@@ -44,7 +44,7 @@ class MONET_Engine(BaseEngine):
             if label.min() < 1:
                 mask_value = label.min()
             if self._iter_cnt == 0:
-                print('check mask value', mask_value)
+                self._logger.info('Mask value: %s', mask_value)
 
             self._iter_cnt += 1
             if self._iter_cnt < self._warm_step:
