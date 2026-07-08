@@ -25,7 +25,9 @@ BEST_CONFIGS = {
         "energy_splits": [0.7, 0.95],
         "topk_edges": 3,
         "ecc_layers": 1,
-        "reference_mae": 1.6523,
+        "paper_mae": 1.66,
+        "paper_mape": 0.04,
+        "paper_rmse": 3.61,
     },
     "SD": {
         "input_dim": 3,
@@ -34,7 +36,9 @@ BEST_CONFIGS = {
         "energy_splits": [0.7, 0.95],
         "topk_edges": 3,
         "ecc_layers": 1,
-        "reference_mae": 20.5886,
+        "paper_mae": 20.64,
+        "paper_mape": 0.15,
+        "paper_rmse": 33.05,
     },
     "KnowAir": {
         "input_dim": 15,
@@ -43,7 +47,9 @@ BEST_CONFIGS = {
         "energy_splits": [0.7, 0.95],
         "topk_edges": 3,
         "ecc_layers": 1,
-        "reference_mae": 20.4873,
+        "paper_mae": 20.55,
+        "paper_mape": 0.55,
+        "paper_rmse": 33.05,
     },
     "BJAir": {
         "input_dim": 18,
@@ -52,7 +58,9 @@ BEST_CONFIGS = {
         "energy_splits": [0.7, 0.95],
         "topk_edges": 3,
         "ecc_layers": 1,
-        "reference_mae": 55.5130,
+        "paper_mae": None,
+        "paper_mape": None,
+        "paper_rmse": None,
     },
 }
 
@@ -162,7 +170,9 @@ def run_one(args, dataset):
     }
     if last_metric is not None:
         result.update(last_metric)
-        result["mae_gap_to_reference"] = last_metric["mae"] - BEST_CONFIGS[dataset]["reference_mae"]
+        paper_mae = BEST_CONFIGS[dataset]["paper_mae"]
+        if paper_mae is not None:
+            result["mae_gap_to_paper"] = last_metric["mae"] - paper_mae
     else:
         result["error"] = "No Average Test metric found in process output."
 
@@ -171,10 +181,11 @@ def run_one(args, dataset):
     return result
 
 
-def write_results(results):
+def write_results(results, dry_run=False):
     RESULT_DIR.mkdir(parents=True, exist_ok=True)
-    json_path = RESULT_DIR / "results.json"
-    csv_path = RESULT_DIR / "results.csv"
+    prefix = "dry_run_results" if dry_run else "results"
+    json_path = RESULT_DIR / f"{prefix}.json"
+    csv_path = RESULT_DIR / f"{prefix}.csv"
 
     json_path.write_text(json.dumps(results, indent=2, ensure_ascii=False), encoding="utf-8")
 
@@ -184,8 +195,10 @@ def write_results(results):
         "mae",
         "rmse",
         "mape",
-        "reference_mae",
-        "mae_gap_to_reference",
+        "paper_mae",
+        "paper_rmse",
+        "paper_mape",
+        "mae_gap_to_paper",
         "emd_dim",
         "gfno_hidden",
         "energy_splits",
@@ -236,7 +249,7 @@ def main():
         result = run_one(args, dataset)
         result["seed"] = args.seed
         results.append(result)
-        write_results(results)
+        write_results(results, dry_run=args.dry_run)
         if result.get("status") == "failed" and not args.continue_on_error:
             raise SystemExit(f"{dataset} failed. Re-run with --continue_on_error to keep going.")
 

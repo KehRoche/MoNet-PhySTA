@@ -57,13 +57,13 @@ def get_config(config_path=None):
 
     parser.add_argument("--mask_ratio", type=float, default=0)
     parser.add_argument("--dataset", type=str, default="PEMS-BAY")
-    parser.add_argument("--emd_dim", type=int, default=4, help="Embedding dimension.")
-    parser.add_argument("--gfno_hidden", type=int, default=8, help="Hidden width of the graph FNO block.")
+    parser.add_argument("--emd_dim", type=int, default=32, help="Embedding dimension.")
+    parser.add_argument("--gfno_hidden", type=int, default=32, help="Hidden width of the graph FNO block.")
     parser.add_argument(
         "--energy_splits",
         nargs=2,
         type=float,
-        default=[0.3, 0.7],
+        default=[0.7, 0.95],
         help="Two spectral energy thresholds, for example: 0.7 0.95.",
     )
     parser.add_argument("--topk_edges", type=int, default=3, help="Number of top-k graph edges.")
