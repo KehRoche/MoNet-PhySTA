@@ -9,9 +9,12 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = [
     "README.md",
     "REPRODUCIBILITY.md",
+    "LICENSE",
     "requirements.txt",
     "experiments/monet/main.py",
     "experiments/monet/run_best_experiments.py",
+    "scripts/summarize_results.py",
+    "scripts/validate_release.py",
     "src/models/monet.py",
 ]
 
@@ -100,6 +103,12 @@ def check_dry_run(errors):
         errors.append("Reproduction runner dry-run failed:\n" + result.stdout)
 
 
+def check_result_summary(errors):
+    result = run([sys.executable, "scripts/summarize_results.py", "--no_write"])
+    if result.returncode != 0:
+        errors.append("Result summary script failed:\n" + result.stdout)
+
+
 def check_license(warnings):
     if not any((REPO_ROOT / name).exists() for name in ["LICENSE", "LICENSE.md", "LICENSE.txt"]):
         warnings.append("No LICENSE file found. Add one before publishing publicly.")
@@ -117,6 +126,7 @@ def main():
     check_python_compile(errors)
     if not args.skip_dry_run:
         check_dry_run(errors)
+    check_result_summary(errors)
     check_license(warnings)
 
     for warning in warnings:

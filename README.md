@@ -109,6 +109,12 @@ eval/monet/best_runs/results.json
 eval/monet/best_runs/<DATASET>_stdout.log
 ```
 
+To summarize completed runs and compare them with the paper Table 1 `Mask=0` metrics:
+
+```bash
+python scripts/summarize_results.py
+```
+
 See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the exact Table 1 comparison, dataset-specific commands, and currently verified results.
 
 ## Single-Dataset Training
@@ -143,4 +149,4 @@ python experiments/monet/main.py \
 - The directed Laplacian eigendecomposition is initialized on CPU to avoid CUDA complex-kernel compatibility issues.
 - Air-quality datasets require the covariate side branch in `src/models/monet.py`; do not remove it when simplifying the model.
 - Run `python scripts/validate_release.py` before publishing to check required files, Python syntax, reproduction dry-run, and accidental tracked artifacts.
-- Add a license file before public release if this repository will be published externally.
+- The repository currently includes an MIT license; replace it before release if a different license is required.

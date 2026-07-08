@@ -69,6 +69,18 @@ eval/monet/best_runs/results.json
 eval/monet/best_runs/<DATASET>_stdout.log
 ```
 
+After runs finish, summarize the latest completed run for each dataset:
+
+```bash
+python scripts/summarize_results.py
+```
+
+To include every completed run found in `eval/monet`:
+
+```bash
+python scripts/summarize_results.py --all_runs
+```
+
 ## Curated Hyperparameters
 
 | Dataset | `emd_dim` | `gfno_hidden` | `energy_splits` | `topk_edges` | `ecc_layers` | `bs` | `seed` |
@@ -145,7 +157,8 @@ python experiments/monet/main.py --dataset BJAir --device cuda:0 --bs 32 --seq_l
 
 - Verify `python -m py_compile` passes for `src` and `experiments`.
 - Run `python experiments/monet/run_best_experiments.py --dry_run`.
+- Run `python scripts/summarize_results.py --no_write`.
 - Run `python scripts/validate_release.py`.
 - Rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
 - Confirm datasets are documented but not committed.
-- Add a license file before public release.
+- Confirm the MIT license is appropriate for the public release, or replace it with the intended license.
