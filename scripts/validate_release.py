@@ -68,6 +68,14 @@ ALLOWED_DATA_SCRIPT_NAMES = {
 
 MARKDOWN_LINK_PATTERN = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
+SMOKE_IMPORTS = [
+    "experiments.monet.main",
+    "src.models.monet",
+    "src.utils.dataloader",
+    "scripts.check_data",
+    "scripts.summarize_results",
+]
+
 
 def run(command):
     return subprocess.run(
@@ -122,6 +130,13 @@ def check_python_compile(errors):
     result = run([sys.executable, "-m", "py_compile", *files])
     if result.returncode != 0:
         errors.append("Python compilation failed:\n" + result.stdout)
+
+
+def check_smoke_imports(errors):
+    code = "; ".join(f"import {module}" for module in SMOKE_IMPORTS)
+    result = run([sys.executable, "-c", code])
+    if result.returncode != 0:
+        errors.append("Smoke imports failed:\n" + result.stdout)
 
 
 def check_markdown_links(errors):
@@ -193,6 +208,7 @@ def main():
     check_required_files(errors)
     check_tracked_files(errors)
     check_python_compile(errors)
+    check_smoke_imports(errors)
     check_markdown_links(errors)
     if not args.skip_dry_run:
         check_dry_run(errors)

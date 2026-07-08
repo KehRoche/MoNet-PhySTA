@@ -21,6 +21,7 @@ The release validator checks:
 
 - required project files and documentation
 - Python syntax for git-tracked Python files
+- smoke imports for the main experiment entrypoint, core model, and utility scripts
 - reproduction-runner dry-run
 - result summarization script
 - accidental tracked datasets, checkpoints, logs, notebooks, visualization outputs, and exploratory scripts
