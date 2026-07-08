@@ -23,6 +23,7 @@ This repository contains the cleaned experimental code used for the ICLR 2026 su
 |-- CONTRIBUTING.md              # Contribution and artifact-boundary guidance
 |-- DATASETS.md                  # Dataset layout and validation guide
 |-- RELEASE.md                   # Final release checklist
+|-- TROUBLESHOOTING.md           # Common setup and reproduction issues
 |-- requirements.txt
 `-- REPRODUCIBILITY.md
 ```
@@ -130,6 +131,8 @@ python scripts/summarize_results.py
 See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the exact Table 1 comparison, dataset-specific commands, and currently verified results.
 
 Small numerical differences from the paper are expected across hardware, CUDA/PyTorch versions, random seeds, and early-stopping points. The provided scripts report deltas for transparency; they do not enforce exact metric equality.
+
+See [TROUBLESHOOTING.md](TROUBLESHOOTING.md) for common environment, dataset, and reproduction issues.
 
 ## Single-Dataset Training
 

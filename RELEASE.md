@@ -20,8 +20,9 @@ python scripts/validate_release.py --check_data
 The release validator checks:
 
 - required project files and documentation
-- Python syntax for git-tracked Python files
+- Python syntax for git-tracked Python files without writing `.pyc` files
 - smoke imports for the main experiment entrypoint, core model, and utility scripts
+- local Markdown links, including troubleshooting and dataset guides
 - reproduction-runner dry-run
 - result summarization script
 - accidental tracked datasets, checkpoints, logs, notebooks, visualization outputs, and exploratory scripts

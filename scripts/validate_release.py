@@ -14,6 +14,7 @@ REQUIRED_FILES = [
     "CITATION.md",
     "CONTRIBUTING.md",
     "DATASETS.md",
+    "TROUBLESHOOTING.md",
     "LICENSE",
     "requirements.txt",
     "experiments/monet/main.py",
@@ -123,13 +124,16 @@ def check_tracked_files(errors):
 
 def check_python_compile(errors):
     try:
-        files = [path.as_posix() for path in git_tracked_files() if path.suffix == ".py"]
+        files = [path for path in git_tracked_files() if path.suffix == ".py"]
     except RuntimeError as exc:
         errors.append(str(exc))
         return
-    result = run([sys.executable, "-m", "py_compile", *files])
-    if result.returncode != 0:
-        errors.append("Python compilation failed:\n" + result.stdout)
+    for path in files:
+        try:
+            source = (REPO_ROOT / path).read_text(encoding="utf-8")
+            compile(source, path.as_posix(), "exec")
+        except Exception as exc:
+            errors.append(f"Python syntax check failed for {path.as_posix()}:\n{exc}")
 
 
 def check_smoke_imports(errors):
