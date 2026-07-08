@@ -13,6 +13,7 @@ PAPER_MASK0 = {
     "PEMS-BAY": {"mae": 1.66, "mape": 0.04, "rmse": 3.61},
     "SD": {"mae": 20.64, "mape": 0.15, "rmse": 33.05},
 }
+PAPER_DATASETS = set(PAPER_MASK0)
 
 LINE_RE = re.compile(r"^(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+) - (.*)$")
 PARAM_RE = re.compile(r"Param:\s*(\{.*\})")
@@ -206,12 +207,35 @@ def write_outputs(rows, output_dir):
     return csv_path, json_path, md_path
 
 
+def validate_strict_paper_rows(rows):
+    errors = []
+    rows_by_dataset = {row["dataset"]: row for row in rows}
+    missing = sorted(PAPER_DATASETS - set(rows_by_dataset))
+    for dataset in missing:
+        errors.append(f"Missing completed run for paper dataset: {dataset}")
+
+    for dataset in sorted(PAPER_DATASETS & set(rows_by_dataset)):
+        row = rows_by_dataset[dataset]
+        if row["loaded_best_val"] is None:
+            errors.append(
+                f"{dataset} latest run did not log 'Loaded best validation model'; "
+                "rerun it with the current code before final paper comparison."
+            )
+
+    return errors
+
+
 def main():
     parser = argparse.ArgumentParser(description="Summarize MoNet experiment logs and compare with paper Table 1.")
     parser.add_argument("--log_root", type=Path, default=DEFAULT_LOG_ROOT)
     parser.add_argument("--all_runs", action="store_true", help="Report every completed run instead of latest per dataset.")
     parser.add_argument("--output_dir", type=Path, default=DEFAULT_LOG_ROOT / "best_runs")
     parser.add_argument("--no_write", action="store_true", help="Only print the summary table.")
+    parser.add_argument(
+        "--strict_paper",
+        action="store_true",
+        help="Fail unless every paper Table 1 dataset has a latest run with best-validation reload.",
+    )
     args = parser.parse_args()
 
     runs = parse_runs(args.log_root)
@@ -226,6 +250,13 @@ def main():
         return
 
     print_markdown(rows)
+    if args.strict_paper:
+        errors = validate_strict_paper_rows(rows)
+        if errors:
+            for error in errors:
+                print(f"ERROR: {error}")
+            raise SystemExit(1)
+
     if not args.no_write:
         paths = write_outputs(rows, args.output_dir)
         print("\nWrote summary files:")

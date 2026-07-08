@@ -81,6 +81,12 @@ To include every completed run found in `eval/monet`:
 python scripts/summarize_results.py --all_runs
 ```
 
+For final release verification, require the latest Table 1 runs to come from code that reloads the best validation state before test:
+
+```bash
+python scripts/summarize_results.py --strict_paper --no_write
+```
+
 ## Curated Hyperparameters
 
 | Dataset | `emd_dim` | `gfno_hidden` | `energy_splits` | `topk_edges` | `ecc_layers` | `bs` | `seed` |
@@ -160,5 +166,6 @@ python experiments/monet/main.py --dataset BJAir --device cuda:0 --bs 32 --seq_l
 - Run `python scripts/summarize_results.py --no_write`.
 - Run `python scripts/validate_release.py`.
 - Rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
+- After rerunning PEMS-BAY, run `python scripts/validate_release.py --strict_results`.
 - Confirm datasets are documented but not committed.
 - Confirm the MIT license is appropriate for the public release, or replace it with the intended license.

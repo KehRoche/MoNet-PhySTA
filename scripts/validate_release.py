@@ -103,8 +103,11 @@ def check_dry_run(errors):
         errors.append("Reproduction runner dry-run failed:\n" + result.stdout)
 
 
-def check_result_summary(errors):
-    result = run([sys.executable, "scripts/summarize_results.py", "--no_write"])
+def check_result_summary(errors, strict_results=False):
+    command = [sys.executable, "scripts/summarize_results.py", "--no_write"]
+    if strict_results:
+        command.append("--strict_paper")
+    result = run(command)
     if result.returncode != 0:
         errors.append("Result summary script failed:\n" + result.stdout)
 
@@ -117,6 +120,11 @@ def check_license(warnings):
 def main():
     parser = argparse.ArgumentParser(description="Run lightweight release-readiness checks.")
     parser.add_argument("--skip_dry_run", action="store_true", help="Skip reproduction runner dry-run.")
+    parser.add_argument(
+        "--strict_results",
+        action="store_true",
+        help="Require latest paper-dataset runs to include best-validation reload logs.",
+    )
     args = parser.parse_args()
 
     errors = []
@@ -126,7 +134,7 @@ def main():
     check_python_compile(errors)
     if not args.skip_dry_run:
         check_dry_run(errors)
-    check_result_summary(errors)
+    check_result_summary(errors, strict_results=args.strict_results)
     check_license(warnings)
 
     for warning in warnings:
