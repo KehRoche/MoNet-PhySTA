@@ -13,6 +13,7 @@ REQUIRED_FILES = [
     "RELEASE.md",
     "CITATION.md",
     "CONTRIBUTING.md",
+    "DATASETS.md",
     "LICENSE",
     "requirements.txt",
     "experiments/monet/main.py",

@@ -21,6 +21,7 @@ This repository contains the cleaned experimental code used for the ICLR 2026 su
 |-- eval/                        # Local logs/results; ignored by git
 |-- CITATION.md                  # Citation placeholder and reporting guidance
 |-- CONTRIBUTING.md              # Contribution and artifact-boundary guidance
+|-- DATASETS.md                  # Dataset layout and validation guide
 |-- RELEASE.md                   # Final release checklist
 |-- requirements.txt
 `-- REPRODUCIBILITY.md
@@ -63,6 +64,8 @@ Supported dataset keys and required input dimensions:
 | `BJAir` | 18 | `data/BJAir/BJAir.npy` |
 
 `input_dim` is selected automatically from the dataset name in `experiments/monet/main.py`. This is intentional: traffic datasets use value/time features, while air-quality datasets include additional covariates.
+
+See [DATASETS.md](DATASETS.md) for detailed dataset shape, adjacency, validation, and git-tracking guidance.
 
 Before running long experiments, validate the local files and shapes:
 

@@ -6,6 +6,8 @@ The paper table used here is Table 1 from `ICLR26_PhySTA.pdf`. Current local run
 
 ## Dataset Requirements
 
+See [DATASETS.md](DATASETS.md) for the full dataset layout, shape, validation, and git-tracking policy.
+
 Expected files:
 
 ```text
