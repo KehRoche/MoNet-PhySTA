@@ -1,0 +1,62 @@
+# Release Checklist
+
+Use this checklist before publishing the repository or making final reproduction claims.
+
+## Automated Gates
+
+These checks are lightweight and should pass before every release:
+
+```bash
+python scripts/validate_release.py
+```
+
+On a machine with the datasets installed, also run:
+
+```bash
+python scripts/check_data.py --datasets PEMS-BAY SD KnowAir BJAir
+python scripts/validate_release.py --check_data
+```
+
+The release validator checks:
+
+- required project files and documentation
+- Python syntax for `src`, `experiments`, and `scripts`
+- reproduction-runner dry-run
+- result summarization script
+- accidental tracked datasets, checkpoints, logs, notebooks, visualization outputs, and exploratory scripts
+
+## Manual Experiment Gates
+
+Long experiments are intentionally manual. Before reporting final paper-comparison numbers:
+
+1. Run the curated reproduction jobs from `REPRODUCIBILITY.md`.
+2. Summarize the logs:
+
+   ```bash
+   python scripts/summarize_results.py --no_write
+   ```
+
+3. For final Table 1 reporting, verify provenance:
+
+   ```bash
+   python scripts/validate_release.py --strict_results
+   ```
+
+The strict result gate verifies that the latest completed paper-dataset runs used the current best-validation reload path. It does not enforce exact metric equality with the paper.
+
+## Current Known Release State
+
+At the time this checklist was added:
+
+- `scripts/validate_release.py` passes.
+- `scripts/validate_release.py --check_data` passes on the local machine with all four datasets.
+- Current parsed local results are documented in `REPRODUCIBILITY.md`.
+- PEMS-BAY should be rerun with the current code before making final paper-comparison claims, because the latest completed parsed run predates the best-validation reload fix.
+- `CITATION.md` contains a placeholder BibTeX entry and should be replaced with official paper metadata before an archival public release.
+
+## Final Human Checks
+
+- Confirm the intended public license.
+- Confirm the final paper title, author list, venue metadata, and citation.
+- Confirm that no local-only data access instructions or private paths are required for reproduction.
+- Confirm that result deltas are reported transparently rather than hidden behind exact-match claims.

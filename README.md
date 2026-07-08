@@ -21,6 +21,7 @@ This repository contains the cleaned experimental code used for the ICLR 2026 su
 |-- eval/                        # Local logs/results; ignored by git
 |-- CITATION.md                  # Citation placeholder and reporting guidance
 |-- CONTRIBUTING.md              # Contribution and artifact-boundary guidance
+|-- RELEASE.md                   # Final release checklist
 |-- requirements.txt
 `-- REPRODUCIBILITY.md
 ```
@@ -161,6 +162,7 @@ python experiments/monet/main.py \
 - Run `python scripts/validate_release.py` before publishing to check required files, Python syntax, reproduction dry-run, and accidental tracked artifacts.
 - Run `python scripts/validate_release.py --check_data` on the machine that has the datasets to include local data integrity checks.
 - Run `python scripts/validate_release.py --strict_results` after manually completing final Table 1 reruns to ensure paper datasets were evaluated with best-validation-state reload. This check validates result provenance, not exact metric equality.
+- See [RELEASE.md](RELEASE.md) for the final automated and manual release gates.
 - The repository currently includes an MIT license; replace it before release if a different license is required.
 
 ## Citation and Contributions
