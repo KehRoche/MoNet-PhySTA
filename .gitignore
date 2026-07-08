@@ -24,6 +24,7 @@ exp_vis/
 screenshots/
 output/
 .reasonix/
+iclr2026/
 experiments/monet/tgssp_analysis/
 experiments/monet/tgssp_analysis_alpha/
 experiments/monet/tgssp_trace/
@@ -49,6 +50,7 @@ data/**/*
 !data/generate_data_for_training.py
 
 # Local notebooks / exploratory artifacts
+*.ipynb
 *.ipynb_checkpoints/
 MSGKN_vis.ipynb
 Spectrum&Frequency_Vis.ipynb

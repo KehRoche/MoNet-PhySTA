@@ -19,6 +19,7 @@ FORBIDDEN_TRACKED_SUFFIXES = {
     ".ckpt",
     ".h5",
     ".html",
+    ".ipynb",
     ".log",
     ".mat",
     ".nc",
@@ -26,6 +27,7 @@ FORBIDDEN_TRACKED_SUFFIXES = {
     ".npz",
     ".pkl",
     ".png",
+    ".pdf",
     ".pt",
     ".pth",
     ".zip",
@@ -34,6 +36,7 @@ FORBIDDEN_TRACKED_SUFFIXES = {
 FORBIDDEN_TRACKED_DIR_PARTS = {
     "eval",
     "exp_vis",
+    "iclr2026",
     "screenshots",
     "tgssp_trace",
     "tgssp_viz",
@@ -75,7 +78,7 @@ def check_tracked_files(errors):
 def check_python_compile(errors):
     files = [
         str(path.relative_to(REPO_ROOT))
-        for base in ["src", "experiments"]
+        for base in ["src", "experiments", "scripts"]
         for path in (REPO_ROOT / base).rglob("*.py")
     ]
     result = run([sys.executable, "-m", "py_compile", *files])
