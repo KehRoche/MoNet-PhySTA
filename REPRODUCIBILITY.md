@@ -49,7 +49,7 @@ The entrypoint overrides `--input_dim` from this mapping to avoid invalid covari
 
 ## Recommended Reproduction Runner
 
-Run all Table 1 datasets:
+Long-running experiments should be launched manually in your own terminal. Run all Table 1 datasets:
 
 ```bash
 python experiments/monet/run_best_experiments.py --datasets PEMS-BAY SD KnowAir
@@ -86,6 +86,8 @@ For final release verification, require the latest Table 1 runs to come from cod
 ```bash
 python scripts/summarize_results.py --strict_paper --no_write
 ```
+
+This strict check verifies that the latest completed paper-dataset runs used the current best-validation reload path. It does not require exact numerical equality with the paper. Small metric differences are acceptable and expected across hardware, dependency versions, and stochastic training.
 
 ## Curated Hyperparameters
 
@@ -132,6 +134,7 @@ BJAir is not included in Table 1 of the paper. Current local result:
 - SD has better RMSE than Table 1 but worse MAE/MAPE. The MAE gap is about 2.85%.
 - PEMS-BAY was run before the best-validation-state reload fix and should be rerun with the current code before final release claims.
 - BJAir is an additional experiment and should not be presented as a Table 1 reproduction unless the paper is updated to include it.
+- The comparison table is intended as a reproducibility guide, not a hard pass/fail threshold. Report observed deltas honestly in release notes or experiment logs.
 
 ## Single-Dataset Commands
 
@@ -165,7 +168,7 @@ python experiments/monet/main.py --dataset BJAir --device cuda:0 --bs 32 --seq_l
 - Run `python experiments/monet/run_best_experiments.py --dry_run`.
 - Run `python scripts/summarize_results.py --no_write`.
 - Run `python scripts/validate_release.py`.
-- Rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
-- After rerunning PEMS-BAY, run `python scripts/validate_release.py --strict_results`.
+- Manually rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
+- After manually rerunning PEMS-BAY, run `python scripts/validate_release.py --strict_results`. This verifies provenance, not exact metric equality.
 - Confirm datasets are documented but not committed.
 - Confirm the MIT license is appropriate for the public release, or replace it with the intended license.

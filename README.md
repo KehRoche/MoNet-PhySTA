@@ -81,7 +81,7 @@ This is not a paper reproduction setting.
 
 ## Reproduce Paper-Scale Runs
 
-Run the curated best-known configurations:
+Long-running experiments should be launched manually in your own terminal. Run the curated best-known configurations with:
 
 ```bash
 python experiments/monet/run_best_experiments.py --datasets PEMS-BAY SD KnowAir
@@ -117,6 +117,8 @@ python scripts/summarize_results.py
 
 See [REPRODUCIBILITY.md](REPRODUCIBILITY.md) for the exact Table 1 comparison, dataset-specific commands, and currently verified results.
 
+Small numerical differences from the paper are expected across hardware, CUDA/PyTorch versions, random seeds, and early-stopping points. The provided scripts report deltas for transparency; they do not enforce exact metric equality.
+
 ## Single-Dataset Training
 
 Example:
@@ -149,5 +151,5 @@ python experiments/monet/main.py \
 - The directed Laplacian eigendecomposition is initialized on CPU to avoid CUDA complex-kernel compatibility issues.
 - Air-quality datasets require the covariate side branch in `src/models/monet.py`; do not remove it when simplifying the model.
 - Run `python scripts/validate_release.py` before publishing to check required files, Python syntax, reproduction dry-run, and accidental tracked artifacts.
-- Run `python scripts/validate_release.py --strict_results` after final Table 1 reruns to ensure paper datasets were evaluated with best-validation-state reload.
+- Run `python scripts/validate_release.py --strict_results` after manually completing final Table 1 reruns to ensure paper datasets were evaluated with best-validation-state reload. This check validates result provenance, not exact metric equality.
 - The repository currently includes an MIT license; replace it before release if a different license is required.

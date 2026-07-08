@@ -220,7 +220,9 @@ def write_results(results, dry_run=False):
 
 
 def parse_args():
-    parser = argparse.ArgumentParser(description="Run MoNet best-known configurations on all datasets.")
+    parser = argparse.ArgumentParser(
+        description="Launch long-running MoNet reproduction jobs with best-known configurations."
+    )
     parser.add_argument("--datasets", nargs="+", choices=BEST_CONFIGS.keys(), default=list(BEST_CONFIGS.keys()))
     parser.add_argument("--python", default=sys.executable, help="Python executable used to launch each run.")
     parser.add_argument("--device", default="cuda:0")

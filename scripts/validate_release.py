@@ -123,7 +123,7 @@ def main():
     parser.add_argument(
         "--strict_results",
         action="store_true",
-        help="Require latest paper-dataset runs to include best-validation reload logs.",
+        help="Require latest paper-dataset runs to include best-validation reload logs; does not enforce metric equality.",
     )
     args = parser.parse_args()
 
