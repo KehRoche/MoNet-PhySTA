@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the accompanying paper and the repository version used."
+title: "PhySTA / MoNet-Phy"
+type: software
+authors:
+  - family-names: Ge
+    given-names: Yan
+  - family-names: Zhou
+    given-names: Zhengyang
+  - family-names: Huang
+    given-names: Qihe
+  - family-names: Liang
+    given-names: Yuxuan
+  - family-names: Wang
+    given-names: Yang
+repository-code: "https://github.com/KehRoche/MoNet-Phy"
+license: MIT

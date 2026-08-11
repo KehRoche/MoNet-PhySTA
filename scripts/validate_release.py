@@ -12,6 +12,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 REQUIRED_FILES = [
     ".gitattributes",
     ".gitignore",
+    "CITATION.cff",
     "README.md",
     "REPRODUCIBILITY.md",
     "RELEASE.md",
@@ -137,6 +138,30 @@ def check_base_config(errors):
             errors.append(
                 f"Base configuration drift for {key}: expected {expected!r}, got {actual!r}"
             )
+
+
+def check_citation_metadata(errors):
+    citation_path = REPO_ROOT / "CITATION.cff"
+    try:
+        citation = yaml.safe_load(citation_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        errors.append(f"Unable to parse CITATION.cff: {exc}")
+        return
+
+    required_values = {
+        "cff-version": "1.2.0",
+        "title": "PhySTA / MoNet-Phy",
+        "type": "software",
+        "license": "MIT",
+    }
+    for key, expected in required_values.items():
+        actual = citation.get(key)
+        if str(actual) != expected:
+            errors.append(
+                f"Citation metadata drift for {key}: expected {expected!r}, got {actual!r}"
+            )
+    if len(citation.get("authors", [])) != 5:
+        errors.append("CITATION.cff must list all five manuscript authors.")
 
 
 def check_tracked_files(errors):
@@ -271,6 +296,7 @@ def main():
     warnings = []
     check_required_files(errors)
     check_base_config(errors)
+    check_citation_metadata(errors)
     check_tracked_files(errors)
     check_private_paths(errors)
     check_python_compile(errors)

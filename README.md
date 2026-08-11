@@ -2,6 +2,10 @@
 
 Reference implementation for **PhySTA**, a physics-inspired spatio-temporal learning framework for graph-structured forecasting and arbitrary inference.
 
+**Paper:** Enabling Arbitrary Inference in Spatio-Temporal Dynamic Systems: A Physics-Inspired Perspective
+
+**Authors:** Yan Ge, Zhengyang Zhou, Qihe Huang, Yuxuan Liang, and Yang Wang
+
 This repository contains the cleaned experimental code used for the ICLR 2026 submission. It focuses on the `Mask=0` forecasting setting and includes scripts for reproducing the main results on PEMS-BAY, SD, KnowAir, and BJAir.
 
 ## Repository Layout
@@ -19,6 +23,7 @@ This repository contains the cleaned experimental code used for the ICLR 2026 su
 |   `-- utils/                   # Data loading, metrics, logging
 |-- data/                        # Local datasets; ignored by git
 |-- eval/                        # Local logs/results; ignored by git
+|-- CITATION.cff                 # GitHub citation metadata
 |-- CITATION.md                  # Citation and result-reporting guidance
 |-- CONTRIBUTING.md              # Contribution and artifact-boundary guidance
 |-- DATASETS.md                  # Dataset layout and validation guide
@@ -177,4 +182,4 @@ python experiments/monet/main.py \
 
 ## Citation and Contributions
 
-Use [CITATION.md](CITATION.md) for citation guidance. Add the official paper metadata there once it is public and before creating an archival release. See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes or reporting reproduced metrics.
+Use [CITATION.md](CITATION.md) for the current submission citation and replace it with the proceedings entry once public. GitHub citation metadata is provided in `CITATION.cff`. See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes or reporting reproduced metrics.

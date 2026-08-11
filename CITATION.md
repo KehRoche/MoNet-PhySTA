@@ -1,12 +1,20 @@
 # Citation
 
-This repository accompanies the PhySTA / MoNet-Phy ICLR 2026 submission.
+This repository accompanies the ICLR 2026 submission:
 
-The final bibliographic metadata is not yet included in this repository. To avoid
-publishing an inaccurate author list or title, no provisional BibTeX entry is
-provided. Until the official paper entry is available, cite the repository URL
-and the exact commit used.
+> Yan Ge, Zhengyang Zhou, Qihe Huang, Yuxuan Liang, and Yang Wang.
+> "Enabling arbitrary inference in spatio-temporal dynamic systems: A
+> physics-inspired perspective." ICLR 2026 submission, 2026.
 
-Before creating an archival release, maintainers should replace this notice with
-the official paper or proceedings BibTeX entry. When reporting reproduced
-metrics, also describe any local code, data-processing, or configuration changes.
+```bibtex
+@misc{ge2026enabling,
+  title  = {Enabling Arbitrary Inference in Spatio-Temporal Dynamic Systems: A Physics-Inspired Perspective},
+  author = {Ge, Yan and Zhou, Zhengyang and Huang, Qihe and Liang, Yuxuan and Wang, Yang},
+  year   = {2026},
+  note   = {ICLR 2026 submission}
+}
+```
+
+Replace the submission entry with the official proceedings citation once it is
+public. When reporting reproduced metrics, cite the exact repository commit and
+describe any local code, data-processing, or configuration changes.

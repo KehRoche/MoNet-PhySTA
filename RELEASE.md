@@ -57,11 +57,11 @@ At the time this checklist was added:
 - `scripts/validate_release.py --strict_results` passes for the latest completed paper-dataset runs.
 - Current parsed local results are documented in `REPRODUCIBILITY.md`.
 - PEMS-BAY has been rerun with the current best-validation reload path.
-- Official paper metadata still needs to be added to `CITATION.md` before an archival public release.
+- Manuscript title and authors are recorded in `CITATION.md` and `CITATION.cff`; replace the submission citation with the proceedings entry once public.
 
 ## Final Human Checks
 
 - Confirm the intended public license.
-- Confirm the final paper title, author list, venue metadata, and citation.
+- Confirm the final venue/proceedings metadata and update the submission citation when it becomes public.
 - Confirm that no local-only data access instructions or private paths are required for reproduction.
 - Confirm that result deltas are reported transparently rather than hidden behind exact-match claims.
