@@ -19,7 +19,7 @@ This repository contains the cleaned experimental code used for the ICLR 2026 su
 |   `-- utils/                   # Data loading, metrics, logging
 |-- data/                        # Local datasets; ignored by git
 |-- eval/                        # Local logs/results; ignored by git
-|-- CITATION.md                  # Citation placeholder and reporting guidance
+|-- CITATION.md                  # Citation and result-reporting guidance
 |-- CONTRIBUTING.md              # Contribution and artifact-boundary guidance
 |-- DATASETS.md                  # Dataset layout and validation guide
 |-- RELEASE.md                   # Final release checklist
@@ -39,6 +39,10 @@ conda create -n monet-phy python=3.9
 conda activate monet-phy
 pip install -r requirements.txt
 ```
+
+The final local release checks used Python 3.9.21, PyTorch 2.0.1, CUDA 11.7,
+PyG 2.6.1, NumPy 1.26.4, and SciPy 1.13.1 on an NVIDIA RTX 3060 Laptop GPU.
+These versions are a tested reference, not a requirement for exact metric equality.
 
 `torch-scatter` and `torch-geometric` are sensitive to the installed PyTorch/CUDA versions. If the generic install fails, install the matching PyG wheels from the official PyG instructions first, then rerun `pip install -r requirements.txt`.
 
@@ -173,4 +177,4 @@ python experiments/monet/main.py \
 
 ## Citation and Contributions
 
-Use [CITATION.md](CITATION.md) for citation guidance and replace the placeholder with the official paper metadata before an archival release. See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes or reporting reproduced metrics.
+Use [CITATION.md](CITATION.md) for citation guidance. Add the official paper metadata there once it is public and before creating an archival release. See [CONTRIBUTING.md](CONTRIBUTING.md) before submitting changes or reporting reproduced metrics.

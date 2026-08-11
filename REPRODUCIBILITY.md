@@ -129,7 +129,7 @@ Current local results from `eval/monet`:
 | Dataset | Current MAE | Current MAPE | Current RMSE | Paper Table 1 MAE | Paper Table 1 MAPE | Paper Table 1 RMSE | MAE Delta |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | KnowAir | 20.3364 | 0.5358 | 32.8287 | 20.55 | 0.55 | 33.05 | -0.2136 |
-| PEMS-BAY | 1.6848 | 0.0392 | 3.7207 | 1.66 | 0.04 | 3.61 | +0.0248 |
+| PEMS-BAY | 1.6863 | 0.0389 | 3.7290 | 1.66 | 0.04 | 3.61 | +0.0263 |
 | SD | 21.2282 | 0.1592 | 32.6871 | 20.64 | 0.15 | 33.05 | +0.5882 |
 
 BJAir is not included in Table 1 of the paper. Current local result:
@@ -142,7 +142,7 @@ BJAir is not included in Table 1 of the paper. Current local result:
 
 - KnowAir currently matches and slightly improves the paper Table 1 `Mask=0` result.
 - SD has better RMSE than Table 1 but worse MAE/MAPE. The MAE gap is about 2.85%.
-- PEMS-BAY was run before the best-validation-state reload fix and should be rerun with the current code before final release claims.
+- PEMS-BAY has been rerun with the current best-validation-state reload path; its MAE delta is about 1.58%.
 - BJAir is an additional experiment and should not be presented as a Table 1 reproduction unless the paper is updated to include it.
 - The comparison table is intended as a reproducibility guide, not a hard pass/fail threshold. Report observed deltas honestly in release notes or experiment logs.
 
@@ -174,13 +174,11 @@ python experiments/monet/main.py --dataset BJAir --device cuda:0 --bs 32 --seq_l
 
 ## Release Checklist
 
-- Verify `python -m py_compile` passes for `src` and `experiments`.
+- Run `python scripts/validate_release.py` for syntax, imports, links, artifact hygiene, and reproduction-runner checks.
 - Run `python scripts/check_data.py --datasets PEMS-BAY SD KnowAir BJAir` on the local machine that has the datasets.
 - Run `python experiments/monet/run_best_experiments.py --dry_run`.
 - Run `python scripts/summarize_results.py --no_write`.
-- Run `python scripts/validate_release.py`.
 - Optionally run `python scripts/validate_release.py --check_data` when local datasets are present.
-- Manually rerun PEMS-BAY with the current best-validation reload logic before reporting final paper comparison.
-- After manually rerunning PEMS-BAY, run `python scripts/validate_release.py --strict_results`. This verifies provenance, not exact metric equality.
+- Run `python scripts/validate_release.py --strict_results` after final manual experiments. This verifies provenance, not exact metric equality.
 - Confirm datasets are documented but not committed.
 - Confirm the MIT license is appropriate for the public release, or replace it with the intended license.

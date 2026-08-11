@@ -4,10 +4,14 @@ import subprocess
 import sys
 from pathlib import Path
 
+import yaml
+
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 
 REQUIRED_FILES = [
+    ".gitattributes",
+    ".gitignore",
     "README.md",
     "REPRODUCIBILITY.md",
     "RELEASE.md",
@@ -17,12 +21,29 @@ REQUIRED_FILES = [
     "TROUBLESHOOTING.md",
     "LICENSE",
     "requirements.txt",
+    "run.sh",
+    "experiments/monet/config.yaml",
     "experiments/monet/main.py",
     "experiments/monet/run_best_experiments.py",
     "scripts/check_data.py",
     "scripts/summarize_results.py",
     "scripts/validate_release.py",
     "src/models/monet.py",
+]
+
+EXPECTED_BASE_CONFIG = {
+    "model_name": "monet",
+    "emd_dim": 32,
+    "gfno_hidden": 32,
+    "energy_splits": [0.7, 0.95],
+    "topk_edges": 3,
+    "ecc_layers": 1,
+}
+
+TEXT_SUFFIXES = {".json", ".md", ".py", ".sh", ".txt", ".yaml", ".yml"}
+PRIVATE_PATH_PATTERNS = [
+    re.compile(r"[A-Za-z]:[\\/]+Users[\\/]+[^\\/\s]+", re.IGNORECASE),
+    re.compile(r"/(?:home|Users)/[^/\s]+/"),
 ]
 
 FORBIDDEN_TRACKED_SUFFIXES = {
@@ -102,6 +123,22 @@ def check_required_files(errors):
             errors.append(f"Missing required file: {rel_path}")
 
 
+def check_base_config(errors):
+    config_path = REPO_ROOT / "experiments/monet/config.yaml"
+    try:
+        config = yaml.safe_load(config_path.read_text(encoding="utf-8"))["config1"]
+    except Exception as exc:
+        errors.append(f"Unable to parse base configuration: {exc}")
+        return
+
+    for key, expected in EXPECTED_BASE_CONFIG.items():
+        actual = config.get(key)
+        if actual != expected:
+            errors.append(
+                f"Base configuration drift for {key}: expected {expected!r}, got {actual!r}"
+            )
+
+
 def check_tracked_files(errors):
     try:
         tracked_files = git_tracked_files()
@@ -120,6 +157,29 @@ def check_tracked_files(errors):
             errors.append(f"Exploratory local script is tracked: {line}")
         if path.parts and path.parts[0] == "data" and path.suffix == ".py" and path.name not in ALLOWED_DATA_SCRIPT_NAMES:
             errors.append(f"Unexpected tracked data-side script: {line}")
+
+
+def check_private_paths(errors):
+    try:
+        tracked_files = git_tracked_files()
+    except RuntimeError as exc:
+        errors.append(str(exc))
+        return
+
+    for path in tracked_files:
+        if path.suffix.lower() not in TEXT_SUFFIXES:
+            continue
+        try:
+            content = (REPO_ROOT / path).read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            continue
+        for pattern in PRIVATE_PATH_PATTERNS:
+            match = pattern.search(content)
+            if match:
+                errors.append(
+                    f"Private absolute path is tracked in {path.as_posix()}: {match.group(0)}"
+                )
+                break
 
 
 def check_python_compile(errors):
@@ -210,7 +270,9 @@ def main():
     errors = []
     warnings = []
     check_required_files(errors)
+    check_base_config(errors)
     check_tracked_files(errors)
+    check_private_paths(errors)
     check_python_compile(errors)
     check_smoke_imports(errors)
     check_markdown_links(errors)

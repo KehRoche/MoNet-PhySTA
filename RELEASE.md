@@ -54,9 +54,10 @@ At the time this checklist was added:
 
 - `scripts/validate_release.py` passes.
 - `scripts/validate_release.py --check_data` passes on the local machine with all four datasets.
+- `scripts/validate_release.py --strict_results` passes for the latest completed paper-dataset runs.
 - Current parsed local results are documented in `REPRODUCIBILITY.md`.
-- PEMS-BAY should be rerun with the current code before making final paper-comparison claims, because the latest completed parsed run predates the best-validation reload fix.
-- `CITATION.md` contains a placeholder BibTeX entry and should be replaced with official paper metadata before an archival public release.
+- PEMS-BAY has been rerun with the current best-validation reload path.
+- Official paper metadata still needs to be added to `CITATION.md` before an archival public release.
 
 ## Final Human Checks
 
