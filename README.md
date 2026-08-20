@@ -1,4 +1,4 @@
-# PhySTA / MoNet-Phy
+# PhySTA / GT-FNO
 
 Reference implementation for **PhySTA**, a physics-inspired spatio-temporal learning framework for graph-structured forecasting and arbitrary inference.
 
